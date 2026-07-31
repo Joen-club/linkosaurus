@@ -86,6 +86,7 @@ Plain web addresses become clean Markdown links on their own:
 - **Smart undo** — with `Open` and `Open Source` in your list, typing `Open S…` quietly unlinks `[[Open]]` and waits for the longer match. You always get the most specific link.
 - **Separators stay intact** — `T-Rex - Facebook` → `[[T-Rex]] - [[Facebook]]`. The dinosaur keeps its link, the platform gets its own (your T-Rex has social media, no judgement).
 - **It learns your vault** — every note name becomes linkable the moment the note exists; frontmatter `aliases:` too.
+- **Accents optional** — type `Lukasz Nowak` and get `[[Łukasz Nowak]]`, correctly spelled. Works for every Latin-script language, in both directions.
 - **Paste & dictation** — pasted or dictated text arrives pre-linked in a single pass.
 - **Periodic auto-relink** — optionally re-scan your vault on a schedule so old notes catch up with new keywords.
 - **Bulk commands** — link a whole note or the whole vault in one go.
@@ -126,6 +127,32 @@ Linkosaurus reads the `aliases:` field from your YAML frontmatter. If `Tokyo.md`
 ### Case-insensitive matching
 
 `tokyo`, `Tokyo`, and `TOKYO` all resolve to the same note. Toggleable.
+
+### Accents optional
+
+Your colleague's note is `Łukasz Nowak.md`, but your keyboard isn't Polish. Type `Lukasz Nowak ` and you still get `[[Łukasz Nowak]]` — spelled the way the note is, not the way you typed it.
+
+It works for every Latin-script language, in both directions, with no letter lists to keep:
+
+| You type | It finds |
+|----------|----------|
+| `Lukasz` | `Łukasz` (Polish) |
+| `Gokhan Sahin` | `Gökhan Şahin` (Turkish) |
+| `Dvorak` | `Dvořák` (Czech) |
+| `Nguyen` | `Nguyễn` (Vietnamese) |
+| `Soren` *or* `Soeren` | `Søren` (Danish) |
+| `Mueller` | `Müller` (German) |
+| `Strasse` | `Straße` |
+
+The reverse works too — typing `Łukasz` finds a note named `Lukasz`.
+
+**Languages.** The default, *All languages*, needs no setup and costs nothing: `ł` only ever means `l`, `ğ` only ever means `g`, so there is nothing for the languages to disagree about. Switch to *Only selected languages* if you'd rather keep some spellings matched exactly — then pick from Polish, Czech & Slovak, Turkish, German, Scandinavian, Icelandic, French, Spanish & Portuguese, Hungarian, Romanian, Baltic, Croatian & Serbian, and Vietnamese.
+
+**Two notes that differ only by accent** — `Zürich.md` next to `Zurich.md` — keep their own identities. Linkosaurus notices the clash and falls back to exact spelling for that name alone, so neither ever links to the other. Every other name stays accent-tolerant.
+
+**One thing it won't do:** if the note itself is named with the plain spelling (`Soeren.md`) and you type the special letter (`Søren`), there's no match. Going that direction would mean treating every `oe` in your writing as a possible `ø`, which turns `poem` into `pom`. Use `;;` search or a frontmatter alias for those.
+
+On by default. Turn it off and matching goes back to exact spelling.
 
 ### Periodic auto-relink
 
@@ -177,6 +204,9 @@ Linkosaurus ships with more knobs than most people will ever need — every opti
 |---------|-------------|
 | **Keyword list** | Your manually defined keywords |
 | **Case-insensitive matching** | Ignore case when matching |
+| **Ignore accents and special letters** | Match across accents — `Lukasz` finds `Łukasz` (on by default) |
+| **Languages** | All languages, or only the ones you pick |
+| **Selected languages** | Which languages' characters are folded |
 | **Single-word alias delimiter** | Inline alias delimiter for single-word display text (default `//`) |
 | **Multi-word alias delimiter** | Inline alias delimiter for multi-word display text (default `///`) |
 | **Alias target suggestions** | Autocomplete popup for the target part of an alias (on by default) |

@@ -2,7 +2,13 @@
 
 ## Ein Befehl — fertig
 
-Schreibe zuerst die Patchnotes in `RELEASE_NOTES.md` — sie werden der Text des GitHub-Releases. Danach tippe einfach:
+Schreibe zuerst die Patchnotes in `RELEASE_NOTES.md` — sie werden der Text des GitHub-Releases. Wenn du an der Zeichen-Faltung (`src/fold.ts`) etwas geändert hast, lauf einmal:
+
+```bash
+npm test
+```
+
+Danach tippe einfach:
 
 ```bash
 npm run release

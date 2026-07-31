@@ -9,7 +9,24 @@ if you want to view the source, please visit the github repository of this plugi
 */
 `;
 
-const prod = (process.argv[2] === "production");
+const mode = process.argv[2];
+const prod = (mode === "production");
+
+// Bundles the pure-logic tests so `node --test` can run them without adding a
+// test framework to the dependency tree.
+if (mode === "test") {
+	await esbuild.build({
+		entryPoints: ["test/fold.test.ts"],
+		bundle: true,
+		external: builtinModules.flatMap((m) => [m, `node:${m}`]),
+		format: "esm",
+		platform: "node",
+		target: "node18",
+		outfile: "test-build/fold.test.mjs",
+		logLevel: "info",
+	});
+	process.exit(0);
+}
 
 const context = await esbuild.context({
 	banner: {

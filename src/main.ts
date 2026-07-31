@@ -20,11 +20,27 @@ import {
 import { EditorView } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 import { Prec, type ChangeDesc } from "@codemirror/state";
+import {
+	DEFAULT_LANGUAGES,
+	LANGUAGE_PACKS,
+	buildFoldTable,
+	fold,
+	foldVariants,
+	foldWithMap,
+	isFoldBoundary,
+	parseLanguages,
+	toFoldedIndex,
+	toSrcIndex,
+	type FoldTable,
+} from "./fold";
 
 interface AutoLinkSettings {
 	keywordList: string;
 	scanVaultLinks: boolean;
 	caseInsensitive: boolean;
+	foldDiacritics: boolean;
+	foldLanguageMode: "all" | "selected";
+	foldLanguages: string;
 	scanFrontmatterAliases: boolean;
 	blocklist: string;
 	minKeywordLength: number;
@@ -47,6 +63,9 @@ const DEFAULT_SETTINGS: AutoLinkSettings = {
 	keywordList: "",
 	scanVaultLinks: true,
 	caseInsensitive: true,
+	foldDiacritics: true,
+	foldLanguageMode: "all",
+	foldLanguages: DEFAULT_LANGUAGES,
 	scanFrontmatterAliases: true,
 	blocklist: "",
 	minKeywordLength: 0,
@@ -68,6 +87,25 @@ const DEFAULT_SETTINGS: AutoLinkSettings = {
 interface KeywordEntry {
 	keyword: string;
 	target: string;
+}
+
+// A keyword with everything matching needs precomputed: its folded spellings
+// (canonical first) and its exact normalized form.
+interface IndexedEntry extends KeywordEntry {
+	folded: string[];
+	exact: string;
+	// True when the canonical fold preserves length, so fuzzy-match offsets
+	// found on it are also valid positions in the raw keyword.
+	foldedIdentity: boolean;
+}
+
+// One folded spelling of one entry. Ambiguous means another entry with a
+// different target folds to the same string — "Zürich" and "Zurich" both
+// reduce to "zurich" — so this spelling only matches on an exact hit.
+interface FoldedKey {
+	entry: IndexedEntry;
+	key: string;
+	ambiguous: boolean;
 }
 
 interface PendingUndo {
@@ -120,8 +158,19 @@ function sanitize(text: string): string {
 
 export default class AutoLinkKeywordsPlugin extends Plugin {
 	settings: AutoLinkSettings = { ...DEFAULT_SETTINGS };
-	private entries: KeywordEntry[] = [];
+	private entries: IndexedEntry[] = [];
 	private lookupMap = new Map<string, string>();
+	// Prefilters: a keyword can only match if its folded form ends (matcher A)
+	// or starts (matcher B) with the same character as the text at that point.
+	private byLastChar = new Map<string, FoldedKey[]>();
+	private byFirstChar = new Map<string, FoldedKey[]>();
+	private ambiguousKeys = new Set<string>();
+	private foldTable: FoldTable = buildFoldTable({
+		enabled: false,
+		lowercase: true,
+		allLanguages: true,
+		languages: new Set<string>(),
+	});
 	private manualEntries: KeywordEntry[] = [];
 	private manualLookup = new Map<string, string>();
 	private vaultEntries: KeywordEntry[] = [];
@@ -308,6 +357,23 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 	private normalize(text: string): string {
 		return this.settings.caseInsensitive ? text.toLowerCase() : text;
+	}
+
+	// The matching form of a string: normalize() plus, when cross-language
+	// matching is on, accents and special letters folded away.
+	foldKey(text: string): string {
+		return fold(text, this.foldTable);
+	}
+
+	// Must run before anything that folds — parseBlocklist and
+	// parseManualKeywords both bake the current table into their output.
+	rebuildFoldTable() {
+		this.foldTable = buildFoldTable({
+			enabled: this.settings.foldDiacritics,
+			lowercase: this.settings.caseInsensitive,
+			allLanguages: this.settings.foldLanguageMode === "all",
+			languages: parseLanguages(this.settings.foldLanguages),
+		});
 	}
 
 	private handleEditorUpdate(
@@ -601,14 +667,16 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			);
 
 			if (setupPendingUndo) {
-				const kwNorm = this.normalize(direct.keyword);
+				const kwNorm = this.foldKey(direct.keyword);
 				const prefix = kwNorm + " ";
-				const hasLonger = this.entries.some((e) => {
-					const norm = this.normalize(e.keyword);
-					return (
-						norm.length > kwNorm.length && norm.startsWith(prefix)
-					);
-				});
+				// Every folded spelling counts: with the Scandinavian pack on,
+				// "Soeren Kierkegaard" must still be seen as a longer match
+				// after [[Søren]] has fired.
+				const hasLonger = this.entries.some((e) =>
+					e.folded.some(
+						(v) => v.length > kwNorm.length && v.startsWith(prefix)
+					)
+				);
 				if (hasLonger) {
 					this.clearPendingUndo();
 					this.pendingUndo = {
@@ -731,8 +799,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		skipKeyword?: string
 	): string {
 		const result: string[] = [];
-		const ci = this.settings.caseInsensitive;
-		const normalizedText = ci ? text.toLowerCase() : text;
+		// i stays a raw index throughout; the fold map bridges to folded space
+		// only where keywords are compared.
+		const folded = foldWithMap(text, this.foldTable);
+		const foldedText = folded.folded;
 		const skipNorm = skipKeyword
 			? this.normalize(skipKeyword)
 			: undefined;
@@ -808,7 +878,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				continue;
 			}
 
-			const urlPrefix = normalizedText.substring(i, i + 8);
+			// Read from the raw text: this only tests for the ASCII scheme
+			// prefix, and folded offsets do not line up with i.
+			const urlPrefix = text.substring(i, i + 8).toLowerCase();
 			if (
 				urlPrefix.startsWith("http://") ||
 				urlPrefix.startsWith("https://")
@@ -881,21 +953,32 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 			if (atStartBoundary) {
 				let matched = false;
-				for (const entry of this.entries) {
-					const kwNorm = ci
-						? entry.keyword.toLowerCase()
-						: entry.keyword;
+				// i is a raw character boundary, so the folded index it maps
+				// to is a fold boundary by construction — only the end of a
+				// candidate match needs checking.
+				const foldedStart = toFoldedIndex(folded, i);
+				const bucket = this.byFirstChar.get(
+					foldedText.charAt(foldedStart)
+				);
+				for (const { entry, key, ambiguous } of bucket ?? []) {
 					if (skipNorm && this.normalize(entry.target) === skipNorm) continue;
-					const kwLen = kwNorm.length;
-					if (i + kwLen > text.length) continue;
+					const foldedEnd = foldedStart + key.length;
+					if (foldedEnd > foldedText.length) continue;
 
 					if (
-						normalizedText.substring(i, i + kwLen) !==
-						kwNorm
+						foldedText.substring(foldedStart, foldedEnd) !== key
+					)
+						continue;
+					if (!isFoldBoundary(folded, foldedEnd)) continue;
+
+					const endPos = toSrcIndex(folded, foldedEnd);
+					if (
+						ambiguous &&
+						this.normalize(text.substring(i, endPos)) !==
+							entry.exact
 					)
 						continue;
 
-					const endPos = i + kwLen;
 					const nextChar =
 						endPos < text.length
 							? text.charAt(endPos)
@@ -945,11 +1028,11 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 
 		const firstChar = text.charAt(0);
-		const firstCharNorm = this.normalize(firstChar);
+		const firstCharNorm = this.foldKey(firstChar);
 		const prefix =
 			pending.matchedKeywordNorm + " " + firstCharNorm;
 		const couldGrow = this.entries.some((e) =>
-			this.normalize(e.keyword).startsWith(prefix)
+			e.folded.some((v) => v.startsWith(prefix))
 		);
 
 		if (!couldGrow) {
@@ -1399,7 +1482,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		for (const raw of this.settings.blocklist.split("\n")) {
 			const line = raw.trim();
 			if (line) {
-				this.blocklistSet.add(this.normalize(line));
+				// Folded, so blocking "Zurich" also blocks "Zürich" — a block
+				// that only covered one spelling would be defeated by the
+				// folded index it is meant to constrain.
+				this.blocklistSet.add(this.foldKey(line));
 			}
 		}
 	}
@@ -1559,25 +1645,96 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		this.entries = [];
 		this.lookupMap = new Map();
+		this.ambiguousKeys = new Set();
 
-		for (const entry of this.manualEntries) {
-			const norm = this.normalize(entry.keyword);
-			this.entries.push(entry);
-			this.lookupMap.set(norm, entry.target);
-		}
+		// Entry insertion is deduped on the exact keyword, never on the folded
+		// one — folding that key would silently drop Zurich.md the moment
+		// Zürich.md was seen first, losing a link target outright.
+		const seenExact = new Set<string>();
+		const keyTarget = new Map<string, string>();
 
-		if (this.settings.scanVaultLinks) {
-			for (const entry of this.vaultEntries) {
-				const norm = this.normalize(entry.keyword);
-				if (this.lookupMap.has(norm)) continue;
-				if (this.blocklistSet.has(norm)) continue;
-				if (minLen > 0 && entry.keyword.length < minLen) continue;
-				this.entries.push(entry);
-				this.lookupMap.set(norm, entry.target);
+		const add = (entry: KeywordEntry, manual: boolean) => {
+			const exact = this.normalize(entry.keyword);
+			if (seenExact.has(exact)) return;
+
+			const folded = foldVariants(entry.keyword, this.foldTable);
+			if (folded.length === 0) return;
+
+			if (!manual) {
+				if (minLen > 0 && entry.keyword.length < minLen) return;
+				// Blocking a keyword blocks every spelling of it, otherwise
+				// the folded index would quietly defeat the block.
+				if (folded.some((v) => this.blocklistSet.has(v))) return;
 			}
+
+			seenExact.add(exact);
+			this.entries.push({
+				...entry,
+				folded,
+				exact,
+				// Compared against the raw keyword, not its normalized form:
+				// this decides whether offsets found in the folded string are
+				// valid positions in the keyword the popup renders.
+				foldedIdentity: folded[0]!.length === entry.keyword.length,
+			});
+
+			for (const key of folded) {
+				const previous = keyTarget.get(key);
+				if (previous === undefined) {
+					keyTarget.set(key, entry.target);
+					this.lookupMap.set(key, entry.target);
+				} else if (
+					this.normalize(previous) !== this.normalize(entry.target)
+				) {
+					// Two different notes reduce to the same spelling.
+					this.ambiguousKeys.add(key);
+				}
+			}
+		};
+
+		for (const entry of this.manualEntries) add(entry, true);
+		if (this.settings.scanVaultLinks) {
+			for (const entry of this.vaultEntries) add(entry, false);
 		}
 
 		this.entries.sort((a, b) => b.keyword.length - a.keyword.length);
+		this.buildBuckets();
+	}
+
+	// Longest-match-wins lives here now: buckets are ordered by folded key
+	// length, and manual entries were inserted first so a stable sort keeps
+	// them ahead of vault entries of the same length.
+	private buildBuckets() {
+		this.byLastChar = new Map();
+		this.byFirstChar = new Map();
+
+		const push = (
+			bucket: Map<string, FoldedKey[]>,
+			char: string,
+			value: FoldedKey
+		) => {
+			const list = bucket.get(char);
+			if (list) list.push(value);
+			else bucket.set(char, [value]);
+		};
+
+		for (const entry of this.entries) {
+			for (const key of entry.folded) {
+				if (!key) continue;
+				const folded: FoldedKey = {
+					entry,
+					key,
+					ambiguous: this.ambiguousKeys.has(key),
+				};
+				push(this.byLastChar, key.charAt(key.length - 1), folded);
+				push(this.byFirstChar, key.charAt(0), folded);
+			}
+		}
+
+		const byKeyLength = (a: FoldedKey, b: FoldedKey) =>
+			b.key.length - a.key.length;
+		for (const list of this.byLastChar.values()) list.sort(byKeyLength);
+		for (const list of this.byFirstChar.values()) list.sort(byKeyLength);
 	}
 
 	private isInCodeContext(
@@ -1652,7 +1809,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const targetKw = textBefore.substring(idx + delim.length);
 		if (!targetKw) return null;
 
-		const target = this.lookupMap.get(this.normalize(targetKw));
+		const target = this.lookupMap.get(this.foldKey(targetKw));
 		if (target === undefined) return null;
 
 		const preceding = textBefore.substring(0, idx);
@@ -1682,7 +1839,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const targetKw = textBefore.substring(secondIdx + delim.length);
 		if (!targetKw) return null;
 
-		const target = this.lookupMap.get(this.normalize(targetKw));
+		const target = this.lookupMap.get(this.foldKey(targetKw));
 		if (target === undefined) return null;
 
 		const beforeSecond = textBefore.substring(0, secondIdx);
@@ -1871,13 +2028,41 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 
 		const fuzzy = prepareFuzzySearch(query);
-		const scored: { entry: KeywordEntry; match: SearchResult }[] = [];
+		const foldedQuery = this.foldKey(query);
+		const fuzzyFolded =
+			this.settings.foldDiacritics && foldedQuery
+				? prepareFuzzySearch(foldedQuery)
+				: null;
+
+		const scored: {
+			entry: IndexedEntry;
+			match: SearchResult | null;
+			score: number;
+		}[] = [];
+
 		for (const entry of candidates) {
 			const match = fuzzy(entry.keyword);
-			if (match) scored.push({ entry, match });
+			if (match) {
+				scored.push({ entry, match, score: match.score });
+				continue;
+			}
+			// Second pass for keywords that folding actually changes, so
+			// typing "Lukasz" still surfaces "Łukasz".
+			if (!fuzzyFolded || entry.folded[0] === entry.exact) continue;
+			const foldedMatch = fuzzyFolded(entry.folded[0]!);
+			if (!foldedMatch) continue;
+			scored.push({
+				entry,
+				// The highlight offsets point into the folded string; they are
+				// only valid positions in the raw keyword when the fold kept
+				// its length. Otherwise render the row without highlights.
+				match: entry.foldedIdentity ? foldedMatch : null,
+				score: foldedMatch.score - 1,
+			});
 		}
-		scored.sort((a, b) => b.match.score - a.match.score);
-		return scored;
+
+		scored.sort((a, b) => b.score - a.score);
+		return scored.map(({ entry, match }) => ({ entry, match }));
 	}
 
 	// displayText null means note-search mode: the typed query was only a
@@ -1965,7 +2150,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const targetKw = text.substring(targetStart, targetEnd);
 		if (!targetKw) return null;
 
-		const target = this.lookupMap.get(this.normalize(targetKw));
+		const target = this.lookupMap.get(this.foldKey(targetKw));
 		if (target === undefined) return null;
 		if (skipNorm && this.normalize(target) === skipNorm) return null;
 
@@ -1998,7 +2183,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const targetKw = text.substring(targetStart, targetEnd);
 		if (!targetKw) return null;
 
-		const target = this.lookupMap.get(this.normalize(targetKw));
+		const target = this.lookupMap.get(this.foldKey(targetKw));
 		if (target === undefined) return null;
 		if (skipNorm && this.normalize(target) === skipNorm) return null;
 
@@ -2015,15 +2200,34 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		start: number;
 		typedText: string;
 	} | null {
-		const normalizedText = this.normalize(textBefore);
+		if (!textBefore) return null;
 
-		for (const entry of this.entries) {
-			const kwNorm = this.normalize(entry.keyword);
-			const kwLen = kwNorm.length;
-			if (normalizedText.length < kwLen) continue;
+		const folded = foldWithMap(textBefore, this.foldTable);
+		const text = folded.folded;
+		if (!text) return null;
 
-			const start = normalizedText.length - kwLen;
-			if (normalizedText.substring(start) !== kwNorm) continue;
+		const bucket = this.byLastChar.get(text.charAt(text.length - 1));
+		if (!bucket) return null;
+
+		for (const { entry, key, ambiguous } of bucket) {
+			const kwLen = key.length;
+			if (text.length < kwLen) continue;
+
+			const foldedStart = text.length - kwLen;
+			if (text.substring(foldedStart) !== key) continue;
+			// Refuse a match that begins inside an expansion such as ß → ss;
+			// replacing from there would eat half a character.
+			if (!isFoldBoundary(folded, foldedStart)) continue;
+
+			const start = toSrcIndex(folded, foldedStart);
+
+			// Two notes folding to the same spelling only match on the exact
+			// one, so "Zurich" never links [[Zürich]] when both exist.
+			if (
+				ambiguous &&
+				this.normalize(textBefore.substring(start)) !== entry.exact
+			)
+				continue;
 
 			if (start > 0) {
 				const ch = textBefore.charAt(start - 1);
@@ -2094,10 +2298,23 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			this.settings.urlAutolinkEnabled = DEFAULT_SETTINGS.urlAutolinkEnabled;
 		if (typeof this.settings.urlAutolinkTlds !== "string")
 			this.settings.urlAutolinkTlds = DEFAULT_SETTINGS.urlAutolinkTlds;
+		if (typeof this.settings.foldDiacritics !== "boolean")
+			this.settings.foldDiacritics = DEFAULT_SETTINGS.foldDiacritics;
+		if (
+			this.settings.foldLanguageMode !== "all" &&
+			this.settings.foldLanguageMode !== "selected"
+		)
+			this.settings.foldLanguageMode = DEFAULT_SETTINGS.foldLanguageMode;
+		if (typeof this.settings.foldLanguages !== "string")
+			this.settings.foldLanguages = DEFAULT_SETTINGS.foldLanguages;
+		this.rebuildFoldTable();
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		// Order matters: the blocklist and the keyword index are both folded
+		// with the current table, so the table has to be rebuilt first.
+		this.rebuildFoldTable();
 		this.parseBlocklist();
 		this.parseManualKeywords();
 		this.parseTlds();
@@ -2320,6 +2537,15 @@ class AutoLinkSettingTab extends PluginSettingTab {
 	getSettingDefinitions(): SettingDefinitionItem[] {
 		const plugin = this.plugin;
 		const vaultScanOn = () => plugin.settings.scanVaultLinks;
+		const foldingOn = () => plugin.settings.foldDiacritics;
+
+		const languageGrid = (setting: Setting) => {
+			setting.setName("Selected languages");
+			setting.setDesc(
+				"Characters outside the ticked languages are matched exactly."
+			);
+			this.buildLanguageGrid(setting.controlEl);
+		};
 
 		const monoTextArea = (
 			setting: Setting,
@@ -2376,6 +2602,74 @@ class AutoLinkSettingTab extends PluginSettingTab {
 					key: "caseInsensitive",
 					defaultValue: DEFAULT_SETTINGS.caseInsensitive,
 				},
+			},
+			{
+				name: "Ignore accents and special letters",
+				desc:
+					"Match keywords across accents and special letters, in both " +
+					"directions: typing Lukasz finds the note Łukasz, Gokhan finds " +
+					"Gökhan, Zoe finds Zoë. The note's own spelling is always what " +
+					"gets written into your text.",
+				aliases: [
+					"accents",
+					"diacritics",
+					"umlaut",
+					"language",
+					"unicode",
+					"polish",
+					"turkish",
+					"czech",
+					"french",
+					"special characters",
+				],
+				control: {
+					type: "toggle",
+					key: "foldDiacritics",
+					defaultValue: DEFAULT_SETTINGS.foldDiacritics,
+				},
+			},
+			{
+				name: "Languages",
+				desc:
+					"All languages needs no setup and has no downside for most " +
+					"vaults — ł only ever means l, ğ only ever means g. Pick " +
+					"individual languages only if you want to keep some spellings " +
+					"matched exactly.",
+				visible: foldingOn,
+				aliases: ["language", "languages"],
+				control: {
+					type: "dropdown",
+					key: "foldLanguageMode",
+					defaultValue: DEFAULT_SETTINGS.foldLanguageMode,
+					options: {
+						all: "All languages (recommended)",
+						selected: "Only selected languages",
+					},
+				},
+			},
+			{
+				name: "Selected languages",
+				aliases: [
+					"language",
+					"polish",
+					"turkish",
+					"german",
+					"czech",
+					"french",
+					"spanish",
+					"hungarian",
+					"romanian",
+					"icelandic",
+					"vietnamese",
+					"scandinavian",
+					"danish",
+					"norwegian",
+					"swedish",
+				],
+				visible: () =>
+					plugin.settings.foldDiacritics &&
+					plugin.settings.foldLanguageMode === "selected",
+				render: (setting: Setting) => languageGrid(setting),
 			},
 			{
 				name: "Single-word alias delimiter",
@@ -2699,11 +2993,49 @@ class AutoLinkSettingTab extends PluginSettingTab {
 			case "aliasSuggestEnabled":
 			case "scanVaultLinks":
 			case "urlAutolinkEnabled":
+			case "foldDiacritics":
+			case "foldLanguageMode":
 				await this.plugin.saveSettings();
 				this.refreshDefinitions();
 				return;
 			default:
 				await this.plugin.saveSettings();
+		}
+	}
+
+	// Shared by the declarative settings and the pre-1.13 fallback.
+	private buildLanguageGrid(container: HTMLElement) {
+		const plugin = this.plugin;
+		const grid = container.createDiv({ cls: "linkosaurus-lang-grid" });
+		const selected = parseLanguages(plugin.settings.foldLanguages);
+
+		for (const pack of LANGUAGE_PACKS) {
+			const row = grid.createEl("label", {
+				cls: "linkosaurus-lang-item",
+			});
+			const box = row.createEl("input", { type: "checkbox" });
+			box.checked = selected.has(pack.id);
+			const text = row.createDiv({ cls: "linkosaurus-lang-text" });
+			text.createSpan({
+				cls: "linkosaurus-lang-name",
+				text: pack.label,
+			});
+			text.createSpan({
+				cls: "linkosaurus-lang-sample",
+				text: pack.sample,
+			});
+
+			box.addEventListener("change", () => {
+				if (box.checked) selected.add(pack.id);
+				else selected.delete(pack.id);
+				plugin.settings.foldLanguages = [...selected].join(",");
+				// Re-index straight away so the change is live before the
+				// debounced save lands.
+				plugin.rebuildFoldTable();
+				plugin.parseBlocklist();
+				plugin.parseManualKeywords();
+				plugin.debouncedSave();
+			});
 		}
 	}
 
@@ -2800,6 +3132,56 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+
+		new Setting(containerEl)
+			.setName("Ignore accents and special letters")
+			.setDesc(
+				"Match keywords across accents and special letters, in both " +
+				"directions: typing Lukasz finds the note Łukasz, Gokhan finds " +
+				"Gökhan. The note's own spelling is always what gets written " +
+				"into your text."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.foldDiacritics)
+					.onChange(async (value) => {
+						this.plugin.settings.foldDiacritics = value;
+						await this.plugin.saveSettings();
+						this.display();
+					});
+			});
+
+		if (this.plugin.settings.foldDiacritics) {
+			new Setting(containerEl)
+				.setName("Languages")
+				.setDesc(
+					"All languages needs no setup and has no downside for most " +
+					"vaults — ł only ever means l, ğ only ever means g. Pick " +
+					"individual languages only if you want to keep some " +
+					"spellings matched exactly."
+				)
+				.addDropdown((dropdown) => {
+					dropdown
+						.addOption("all", "All languages (recommended)")
+						.addOption("selected", "Only selected languages")
+						.setValue(this.plugin.settings.foldLanguageMode)
+						.onChange(async (value) => {
+							this.plugin.settings.foldLanguageMode =
+								value === "selected" ? "selected" : "all";
+							await this.plugin.saveSettings();
+							this.display();
+						});
+				});
+
+			if (this.plugin.settings.foldLanguageMode === "selected") {
+				const setting = new Setting(containerEl)
+					.setName("Selected languages")
+					.setDesc(
+						"Characters outside the ticked languages are matched exactly."
+					);
+				this.buildLanguageGrid(setting.controlEl);
+			}
+		}
 
 		new Setting(containerEl)
 			.setName("Single-word alias delimiter")

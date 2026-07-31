@@ -20,6 +20,47 @@
 	width: 60px;
 }
 
+/* ---- Language picker for cross-language matching ---- */
+
+.linkosaurus-lang-grid {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+	gap: var(--size-4-1) var(--size-4-3);
+	width: 100%;
+	max-width: 520px;
+}
+
+.linkosaurus-lang-item {
+	display: flex;
+	align-items: flex-start;
+	gap: var(--size-4-2);
+	padding: var(--size-4-1) 0;
+	cursor: pointer;
+}
+
+.linkosaurus-lang-item input {
+	margin-top: 2px;
+	flex-shrink: 0;
+}
+
+.linkosaurus-lang-text {
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+}
+
+.linkosaurus-lang-name {
+	font-size: var(--font-ui-small);
+}
+
+.linkosaurus-lang-sample {
+	color: var(--text-muted);
+	font-size: var(--font-smaller);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 /* ---- Alias target suggestion popup: floating glass panel ---- */
 
 .suggestion-container.linkosaurus-alias-suggest {
