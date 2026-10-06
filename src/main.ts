@@ -220,6 +220,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private byKey = new Map<string, FoldedKey[]>();
 	// Every distinct folded key length, longest first.
 	private keyLengths: number[] = [];
+	// "open" when some keyword is "open …"; "open s" when one is "open s…".
+	private growPrefixes = new Set<string>();
+	private growNext = new Set<string>();
 	private ambiguousKeys = new Set<string>();
 	private foldTable: FoldTable = buildFoldTable({
 		enabled: false,
@@ -901,15 +904,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 			if (setupPendingUndo) {
 				const kwNorm = this.foldKey(direct.keyword);
-				const prefix = kwNorm + " ";
 				// Every folded spelling counts: with the Scandinavian pack on,
 				// "Soeren Kierkegaard" must still be seen as a longer match
 				// after [[Søren]] has fired.
-				const hasLonger = this.entries.some((e) =>
-					e.folded.some(
-						(v) => v.length > kwNorm.length && v.startsWith(prefix)
-					)
-				);
+				const hasLonger = this.growPrefixes.has(kwNorm);
 				if (hasLonger) {
 					this.clearPendingUndo();
 					this.pendingUndo = {
@@ -1284,9 +1282,19 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const firstCharNorm = this.foldKey(firstChar);
 		const prefix =
 			pending.matchedKeywordNorm + " " + firstCharNorm;
-		const couldGrow = this.entries.some((e) =>
-			e.folded.some((v) => v.startsWith(prefix))
-		);
+		// O(1) through the sets built with the index. A character that
+		// folds to several (ß → ss) is checked on its first one, then
+		// confirmed by a scan; one that folds away only needs the space.
+		let couldGrow: boolean;
+		if (firstCharNorm.length === 0) {
+			couldGrow = this.growPrefixes.has(pending.matchedKeywordNorm);
+		} else if (firstCharNorm.length === 1) {
+			couldGrow = this.growNext.has(prefix);
+		} else {
+			couldGrow =
+				this.growNext.has(prefix.substring(0, prefix.length - firstCharNorm.length + 1)) &&
+				this.entries.some((e) => e.folded.some((v) => v.startsWith(prefix)));
+		}
 
 		if (!couldGrow) {
 			this.clearPendingUndo();
@@ -2133,6 +2141,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private buildBuckets() {
 		this.byKey = new Map();
 		const lengths = new Set<number>();
+		const growPrefixes = new Set<string>();
+		const growNext = new Set<string>();
 
 		for (const entry of this.entries) {
 			for (const key of entry.folded) {
@@ -2146,8 +2156,17 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				if (list) list.push(folded);
 				else this.byKey.set(key, [folded]);
 				lengths.add(key.length);
+				// Every "words so far" prefix of a multi-word keyword, so the
+				// pending-undo logic can ask in O(1) whether a match could
+				// still grow into a longer keyword.
+				for (let p = key.indexOf(" "); p > 0; p = key.indexOf(" ", p + 1)) {
+					growPrefixes.add(key.substring(0, p));
+					if (p + 1 < key.length) growNext.add(key.substring(0, p + 2));
+				}
 			}
 		}
+		this.growPrefixes = growPrefixes;
+		this.growNext = growNext;
 
 		this.keyLengths = [...lengths].sort((a, b) => b - a);
 	}

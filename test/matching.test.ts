@@ -119,3 +119,17 @@ test("matchKeyword only folds the tail of a long line", () => {
 	// A word that only partly fits the window is still not matched inside.
 	assert.equal(p.matchKeyword("a".repeat(500) + "Berlin"), null);
 });
+
+test("grow sets answer whether a match can still become a longer keyword", () => {
+	const p = plugin("Open\nOpen Source Initiative\nSøren Kierkegaard") as unknown as {
+		growPrefixes: Set<string>;
+		growNext: Set<string>;
+	};
+	assert.equal(p.growPrefixes.has("open"), true);
+	assert.equal(p.growPrefixes.has("open source"), true);
+	assert.equal(p.growNext.has("open s"), true);
+	assert.equal(p.growNext.has("open x"), false);
+	// Folded spellings count too.
+	assert.equal(p.growPrefixes.has("soren"), true);
+	assert.equal(p.growPrefixes.has("source"), false);
+});
