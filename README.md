@@ -275,7 +275,7 @@ Privacy is the default, not a feature. Linkosaurus runs **entirely on your devic
 
 ### Manual
 
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/polygonhunter/linkosaurus/releases/latest)
+1. Download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/polygonhunter/linkosaurus/releases/latest)
 2. Drop them into `<vault>/.obsidian/plugins/autolink-keywords/`
 3. Enable Linkosaurus under **Settings → Community plugins**
 

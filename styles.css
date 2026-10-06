@@ -75,10 +75,9 @@
 	-webkit-backdrop-filter: blur(24px) saturate(1.6);
 	border: 1px solid
 		color-mix(in srgb, var(--background-modifier-border) 55%, transparent);
-	box-shadow:
-		0 16px 48px rgb(0 0 0 / 0.32),
-		0 2px 8px rgb(0 0 0 / 0.16),
-		inset 0 1px 0 rgb(255 255 255 / 0.08);
+	/* The theme's own popover shadow, so light themes and custom themes
+	   are not stuck with a hard-coded dark one. */
+	box-shadow: var(--shadow-l);
 	animation: linkosaurus-suggest-pop 150ms cubic-bezier(0.2, 1.2, 0.3, 1);
 	overflow: hidden;
 }
@@ -196,4 +195,26 @@
 	background-color: var(--background-secondary);
 	border-radius: 4px;
 	white-space: pre-wrap;
+}
+
+/* Motion only for those who want it. */
+@media (prefers-reduced-motion: reduce) {
+	.suggestion-container.linkosaurus-alias-suggest {
+		animation: none;
+	}
+	.linkosaurus-suggest-pill {
+		transition: none;
+	}
+}
+
+/* High-contrast modes drop backgrounds, which would hide the selection
+   pill entirely; an outline on the selected row takes its place. */
+@media (forced-colors: active) {
+	.linkosaurus-suggest-pill {
+		display: none;
+	}
+	.linkosaurus-alias-suggest .suggestion-item.is-selected {
+		outline: 2px solid Highlight;
+		outline-offset: -2px;
+	}
 }
