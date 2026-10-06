@@ -118,3 +118,73 @@ export function frontmatterEnd(text: string): number {
 	if (!match) return 0;
 	return searchFrom + match.index + match[0].length;
 }
+
+/**
+ * True when only indentation (or blockquote markers) stands between the
+ * start of the line and `i`. `charBefore` is the character before the text,
+ * for text that is inserted into a document.
+ */
+export function isAtLineStart(text: string, i: number, charBefore = ""): boolean {
+	let j = i - 1;
+	while (j >= 0 && /[ \t>]/.test(text.charAt(j))) j--;
+	if (j >= 0) return text.charAt(j) === "\n";
+	return charBefore === "" || charBefore === "\n";
+}
+
+/**
+ * A fenced code block (``` or ~~~, three or more) starting at `i`. Fences
+ * only open at the start of a line; the block ends at a line that starts
+ * with at least as many of the same character, or runs to the end of the
+ * text when it is never closed.
+ */
+export function skipFencedCode(text: string, i: number, charBefore = ""): number {
+	const ch = text.charAt(i);
+	if (ch !== "`" && ch !== "~") return -1;
+	let n = i;
+	while (n < text.length && text.charAt(n) === ch) n++;
+	const len = n - i;
+	if (len < 3) return -1;
+	if (!isAtLineStart(text, i, charBefore)) return -1;
+	// Backtick fences cannot carry a backtick in their info string.
+	const lineEnd = text.indexOf("\n", n);
+	const info = text.substring(n, lineEnd === -1 ? text.length : lineEnd);
+	if (ch === "`" && info.includes("`")) return -1;
+	if (lineEnd === -1) return text.length;
+
+	let pos = lineEnd + 1;
+	while (pos <= text.length) {
+		const next = text.indexOf("\n", pos);
+		const line = text.substring(pos, next === -1 ? text.length : next);
+		const m = /^[ \t>]*([`~]+)[ \t]*$/.exec(line);
+		if (m && m[1]!.charAt(0) === ch && m[1]!.length >= len && !m[1]!.includes(ch === "`" ? "~" : "`")) {
+			return next === -1 ? text.length : next;
+		}
+		if (next === -1) break;
+		pos = next + 1;
+	}
+	return text.length;
+}
+
+/**
+ * Inline code starting at `i`: a run of backticks closed by a run of the
+ * same length within the same paragraph. Returns -1 when there is no such
+ * closer, so a stray backtick does not swallow the rest of the note.
+ */
+export function skipInlineCode(text: string, i: number): number {
+	if (text.charAt(i) !== "`") return -1;
+	let n = i;
+	while (n < text.length && text.charAt(n) === "`") n++;
+	const len = n - i;
+	const paragraphEnd = text.indexOf("\n\n", n);
+	const limit = paragraphEnd === -1 ? text.length : paragraphEnd;
+	let j = n;
+	while (j < limit) {
+		const k = text.indexOf("`", j);
+		if (k === -1 || k >= limit) return -1;
+		let e = k;
+		while (e < text.length && text.charAt(e) === "`") e++;
+		if (e - k === len) return e;
+		j = e;
+	}
+	return -1;
+}

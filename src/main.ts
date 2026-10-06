@@ -68,6 +68,8 @@ import {
 	skipComment,
 	skipDisplayMath,
 	skipHashtag,
+	skipFencedCode,
+	skipInlineCode,
 	skipInlineMath,
 } from "./skip";
 
@@ -997,19 +999,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		};
 
 		while (i < text.length) {
-			const sub3 = text.substring(i, i + 3);
+			const c0 = text.charAt(i);
 
-			if (sub3 === "```" || sub3 === "~~~") {
-				const closeIdx = text.indexOf(sub3, i + 3);
-				if (closeIdx !== -1) {
-					result.push(text.substring(i, closeIdx + 3));
-					i = closeIdx + 3;
-				} else {
-					result.push(text.substring(i));
-					i = text.length;
-				}
+			// Fences open only at the start of a line; elsewhere a run of
+			// backticks is inline code, handled below.
+			if (
+				(c0 === "`" || c0 === "~") &&
+				skipRegion(skipFencedCode(text, i, charBefore))
+			)
 				continue;
-			}
 
 			if (text.substring(i, i + 2) === "[[") {
 				const closeIdx = text.indexOf("]]", i + 2);
@@ -1043,15 +1041,16 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				}
 			}
 
-			if (text.charAt(i) === "`") {
-				const closeIdx = text.indexOf("`", i + 1);
-				if (closeIdx !== -1) {
-					result.push(text.substring(i, closeIdx + 1));
-					i = closeIdx + 1;
-				} else {
-					result.push(text.substring(i));
-					i = text.length;
+			if (c0 === "`") {
+				// Paired with a closer of the same length in the same
+				// paragraph; a stray backtick is just a character and
+				// scanning goes on after it.
+				let end = skipInlineCode(text, i);
+				if (end === -1) {
+					end = i;
+					while (end < text.length && text.charAt(end) === "`") end++;
 				}
+				skipRegion(end);
 				continue;
 			}
 

@@ -87,3 +87,47 @@ test("isWordChar includes combining marks", () => {
 	assert.equal(isWordChar(" "), false);
 	assert.equal(isWordChar(""), false);
 });
+
+import { isAtLineStart, skipFencedCode, skipInlineCode } from "../src/skip";
+
+test("isAtLineStart accepts indentation and quote markers", () => {
+	assert.equal(isAtLineStart("```", 0), true);
+	assert.equal(isAtLineStart("a\n  ```", 4), true);
+	assert.equal(isAtLineStart("> ```", 2), true);
+	assert.equal(isAtLineStart("text ```", 5), false);
+	assert.equal(isAtLineStart("```", 0, "x"), false);
+	assert.equal(isAtLineStart("```", 0, "\n"), true);
+});
+
+test("skipFencedCode skips a block up to its closing fence", () => {
+	const text = "```js\nBerlin\n```\nafter";
+	assert.equal(skipFencedCode(text, 0), 16);
+	assert.equal(text.substring(16), "\nafter");
+});
+
+test("skipFencedCode needs a long enough closing fence of the same kind", () => {
+	const text = "````\n```\nBerlin\n````\nafter";
+	assert.equal(text.substring(skipFencedCode(text, 0)), "\nafter");
+	const tilde = "~~~\n```\n~~~\nafter";
+	assert.equal(tilde.substring(skipFencedCode(tilde, 0)), "\nafter");
+});
+
+test("skipFencedCode ignores fences in the middle of a line", () => {
+	assert.equal(skipFencedCode("see ```x``` here", 4), -1);
+});
+
+test("skipFencedCode runs to the end when never closed", () => {
+	assert.equal(skipFencedCode("```\nBerlin", 0), 10);
+});
+
+test("skipInlineCode pairs runs of equal length", () => {
+	assert.equal(skipInlineCode("`a` b", 0), 3);
+	assert.equal(skipInlineCode("``a ` b`` c", 0), 9);
+});
+
+test("skipInlineCode does not cross a paragraph break or swallow the rest", () => {
+	assert.equal(skipInlineCode("`open\n\nBerlin `x`", 0), -1);
+	assert.equal(skipInlineCode("`never closed Berlin", 0), -1);
+	// Same paragraph, line break allowed.
+	assert.equal(skipInlineCode("`a\nb` c", 0), 5);
+});
