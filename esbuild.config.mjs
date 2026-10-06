@@ -23,6 +23,9 @@ if (mode === "test") {
 			.filter((f) => f.endsWith(".test.ts"))
 			.map((f) => `test/${f}`),
 		bundle: true,
+		// main.ts is loaded against a small stand-in for the Obsidian API;
+		// the CodeMirror packages are the real ones from node_modules.
+		alias: { obsidian: "./test/stubs/obsidian.ts" },
 		external: builtinModules.flatMap((m) => [m, `node:${m}`]),
 		format: "esm",
 		platform: "node",
