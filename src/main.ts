@@ -219,6 +219,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// Fields that already carry a suggestion popup. Weak so the entries go
 	// away with the elements when a note closes.
 	private propertySuggestFields = new WeakSet<HTMLElement>();
+	// The popups themselves, so they can be closed when the plugin unloads.
+	// Pruned as their fields leave the DOM.
+	private propertySuggests = new Set<{
+		field: HTMLElement;
+		suggest: InputSuggestInstance;
+	}>();
+	// Timers that drop a file from propertyLinkWrites after the echo of our
+	// own write has passed.
+	private propertyEchoTimers = new Set<number>();
 	private propertyFocusTimer: number | null = null;
 	// Files this plugin is currently writing to, so its own frontmatter edit
 	// does not come back through the metadata cache as new work.
@@ -435,7 +444,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	onunload() {
 		this.unloaded = true;
 		if (this.scanTimer !== null) window.clearTimeout(this.scanTimer);
-		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+		// A settings edit still waiting for its debounce must not be lost.
+		this.flushPendingSave();
 		this.stopPeriodicRelink();
 		if (this.relinkDebounceTimer !== null) window.clearTimeout(this.relinkDebounceTimer);
 		for (const timer of this.propertyLinkTimers.values()) {
@@ -446,8 +456,31 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (this.propertyFocusTimer !== null) {
 			window.clearTimeout(this.propertyFocusTimer);
 		}
+		for (const timer of this.propertyEchoTimers) window.clearTimeout(timer);
+		this.propertyEchoTimers.clear();
+		this.propertyLinkWrites.clear();
+		for (const { suggest } of this.propertySuggests) {
+			try {
+				suggest.close();
+			} catch {
+				// The field may already be gone.
+			}
+		}
+		this.propertySuggests.clear();
+		this.aliasSuggest?.close();
+		this.aliasSuggest = null;
+		this.lastAutolink = null;
 		this.clearPendingUndo();
 		this.cancelDeferredAutolinks();
+	}
+
+	// Writes a settings change that is still waiting in debouncedSave right
+	// away. Used when the plugin unloads and when the settings tab closes.
+	flushPendingSave() {
+		if (this.saveTimer === null) return;
+		window.clearTimeout(this.saveTimer);
+		this.saveTimer = null;
+		void this.saveSettings();
 	}
 
 	private normalize(text: string): string {
@@ -1419,9 +1452,13 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.stopPeriodicRelink();
 		if (!this.settings.periodicRelink) return;
 		const ms = this.settings.periodicRelinkIntervalMinutes * 60 * 1000;
-		this.relinkTimer = window.setInterval(() => {
-			void this.relinkVault(false);
-		}, ms);
+		// registerInterval clears it on unload even if stopPeriodicRelink is
+		// never reached.
+		this.relinkTimer = this.registerInterval(
+			window.setInterval(() => {
+				void this.relinkVault(false);
+			}, ms)
+		);
 	}
 
 	stopPeriodicRelink() {
@@ -1432,7 +1469,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	}
 
 	private scheduleRelinkDebounced() {
-		if (!this.settings.periodicRelink) return;
+		if (this.unloaded || !this.settings.periodicRelink) return;
 		if (this.relinkDebounceTimer !== null) window.clearTimeout(this.relinkDebounceTimer);
 		this.relinkDebounceTimer = window.setTimeout(() => {
 			this.relinkDebounceTimer = null;
@@ -1441,7 +1478,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	}
 
 	private async relinkVault(showNotice: boolean) {
-		if (this.relinking) return;
+		if (this.relinking || this.unloaded) return;
 		if (this.entries.length === 0) return;
 		this.relinking = true;
 
@@ -1457,6 +1494,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			let totalLinked = 0;
 
 			for (const file of files) {
+				if (this.unloaded) break;
 				if (openFiles.has(file.path)) continue;
 				if (activeFile && file.path === activeFile.path) continue;
 
@@ -1466,6 +1504,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				const replaced = this.replaceKeywordsInText(content, "", "", file.basename);
 				if (replaced === content) continue;
 
+				if (this.unloaded) break;
 				await this.app.vault.modify(file, replaced);
 				totalLinked++;
 			}
@@ -1483,7 +1522,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	}
 
 	private scheduleScan() {
-		if (!this.settings.scanVaultLinks) return;
+		if (this.unloaded || !this.settings.scanVaultLinks) return;
 		if (this.scanTimer !== null) window.clearTimeout(this.scanTimer);
 		this.scanTimer = window.setTimeout(() => {
 			this.scanVaultLinks();
@@ -2402,7 +2441,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (!Suggest) return;
 
 		this.propertySuggestFields.add(target);
-		new Suggest(this.app, this, target as HTMLInputElement | HTMLDivElement);
+		for (const entry of this.propertySuggests) {
+			if (!entry.field.isConnected) this.propertySuggests.delete(entry);
+		}
+		const suggest = new Suggest(
+			this.app,
+			this,
+			target as HTMLInputElement | HTMLDivElement
+		);
+		this.propertySuggests.add({ field: target, suggest });
 		const key = target
 			.closest(".metadata-property")
 			?.getAttribute("data-property-key");
@@ -2608,7 +2655,11 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 
 		// The write comes back through the metadata cache; ignore that echo.
-		window.setTimeout(() => this.propertyLinkWrites.delete(file.path), 1000);
+		const echoTimer = window.setTimeout(() => {
+			this.propertyEchoTimers.delete(echoTimer);
+			this.propertyLinkWrites.delete(file.path);
+		}, 1000);
+		this.propertyEchoTimers.add(echoTimer);
 
 		if (showNotice && changed > 0) {
 			new Notice(
@@ -2769,6 +2820,9 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 	}
 
 	protected getSuggestions(query: string): AliasSuggestion[] {
+		// The listeners outlive a reload of the plugin; the old instance must
+		// stay silent so the new one's popup is the only one.
+		if (this.plugin.unloaded) return [];
 		if (!this.plugin.settings.noteSearchEnabled) return [];
 
 		const trigger = matchPropertySearchTrigger(
@@ -3039,6 +3093,13 @@ class AutoLinkSettingTab extends PluginSettingTab {
 	constructor(app: App, plugin: AutoLinkKeywordsPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
+	}
+
+	// Closing the tab writes a pending text edit immediately instead of
+	// leaving it to the debounce timer.
+	hide() {
+		this.plugin.flushPendingSave();
+		super.hide();
 	}
 
 	// Declarative settings for Obsidian 1.13+: rendered by the framework and
