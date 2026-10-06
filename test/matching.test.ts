@@ -158,3 +158,24 @@ test("search popup: narrowing a query gives the same result as a fresh search", 
 	assert.ok(a.length > 0 && a.length <= 12);
 	assert.ok(a.every((k) => k.includes("note12")));
 });
+
+test("allowsLinksIn honours never-link folders, opt-out property and plugin notes", () => {
+	const fm: Record<string, Record<string, unknown>> = {
+		"Notes/private.md": { linkosaurus: false },
+		"Notes/board.md": { "kanban-plugin": "basic" },
+	};
+	const p = new AutoLinkKeywordsPlugin(
+		{
+			metadataCache: { getFileCache: (f: { path: string }) => ({ frontmatter: fm[f.path] }) },
+		} as never,
+		{} as never
+	);
+	p.settings.neverLinkFolders = "Archive\n/Templates/";
+	const file = (path: string) => ({ path, extension: "md" }) as never;
+	assert.equal(p.allowsLinksIn(file("Notes/a.md")), true);
+	assert.equal(p.allowsLinksIn(file("archive/old.md")), false);
+	assert.equal(p.allowsLinksIn(file("Templates/Daily.md")), false);
+	assert.equal(p.allowsLinksIn(file("Notes/private.md")), false);
+	assert.equal(p.allowsLinksIn(file("Notes/board.md")), false);
+	assert.equal(p.allowsLinksIn(null), true);
+});

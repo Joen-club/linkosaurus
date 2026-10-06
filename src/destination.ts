@@ -71,3 +71,22 @@ export function passesFolderFilter(
 	const inside = isInFolders(path, folders);
 	return mode === "include" ? inside : !inside;
 }
+
+/** The frontmatter key a note uses to opt out of Linkosaurus. */
+export const OPT_OUT_PROPERTY = "linkosaurus";
+
+/**
+ * True when a note's frontmatter says "leave me alone": linkosaurus: false
+ * (also written as "false", "no", "off" or "never").
+ */
+export function optsOutByFrontmatter(
+	frontmatter: Record<string, unknown> | undefined | null
+): boolean {
+	if (!frontmatter) return false;
+	const value = frontmatter[OPT_OUT_PROPERTY];
+	if (value === false) return true;
+	if (typeof value === "string") {
+		return ["false", "no", "off", "never"].includes(value.trim().toLowerCase());
+	}
+	return false;
+}

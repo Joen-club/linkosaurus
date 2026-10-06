@@ -56,3 +56,15 @@ test("passesFolderFilter honours include and exclude", () => {
 	assert.equal(passesFolderFilter("Work/a.md", folders, "exclude"), false);
 	assert.equal(passesFolderFilter("Home/a.md", [], "include"), true);
 });
+
+import { optsOutByFrontmatter } from "../src/destination";
+
+test("a note opts out with linkosaurus: false", () => {
+	assert.equal(optsOutByFrontmatter({ linkosaurus: false }), true);
+	assert.equal(optsOutByFrontmatter({ linkosaurus: "off" }), true);
+	assert.equal(optsOutByFrontmatter({ linkosaurus: "Never" }), true);
+	assert.equal(optsOutByFrontmatter({ linkosaurus: true }), false);
+	assert.equal(optsOutByFrontmatter({ linkosaurus: "yes" }), false);
+	assert.equal(optsOutByFrontmatter({ other: false }), false);
+	assert.equal(optsOutByFrontmatter(undefined), false);
+});

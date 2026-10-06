@@ -56,7 +56,9 @@ import {
 } from "./properties";
 import {
 	hashStrings,
+	isInFolders,
 	isPluginOwnedNote,
+	optsOutByFrontmatter,
 	parseFolderList,
 	passesFolderFilter,
 } from "./destination";
@@ -96,6 +98,7 @@ interface AutoLinkSettings {
 	minKeywordLength: number;
 	folderFilter: string;
 	folderFilterMode: "include" | "exclude";
+	neverLinkFolders: string;
 	periodicRelink: boolean;
 	periodicRelinkIntervalMinutes: number;
 	singleWordDelimiter: string;
@@ -127,6 +130,7 @@ const DEFAULT_SETTINGS: AutoLinkSettings = {
 	minKeywordLength: 0,
 	folderFilter: "",
 	folderFilterMode: "exclude",
+	neverLinkFolders: "",
 	periodicRelink: false,
 	periodicRelinkIntervalMinutes: 5,
 	singleWordDelimiter: "//",
@@ -416,6 +420,12 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					return;
 				}
 				const file = this.app.workspace.getActiveFile();
+				if (!this.allowsLinksIn(file)) {
+					new Notice(
+						"Linkosaurus: this note is excluded from linking (folder or linkosaurus: false)."
+					);
+					return;
+				}
 				const selfName = file?.basename ?? "";
 				const replaced = this.replaceKeywordsInText(
 					content,
@@ -941,6 +951,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		if (!textBefore.length) return false;
 		if (this.isInCodeContext(view, pos, line.text, colOffset)) return false;
+		if (!this.activeFileAllowsLinks()) return false;
 		if (this.isInsideWikilink(textBefore)) return false;
 		// An active note search owns its query: spaces and punctuation are
 		// part of what the user is filtering for, so the auto-linker must not
@@ -1077,6 +1088,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		if (!this.hasBulkWork()) return false;
 		if (text.length > 10000) return false;
+		if (!this.activeFileAllowsLinks()) return false;
 
 		const state = view.state;
 		const line = state.doc.lineAt(from);
@@ -1128,6 +1140,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (!text || text.length > 10000) return false;
 		// URLs and email addresses link without any keyword.
 		if (!this.hasBulkWork()) return false;
+		if (!this.activeFileAllowsLinks()) return false;
 
 		const state = view.state;
 		const { from, to } = state.selection.main;
@@ -1620,6 +1633,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (this.isInCodeContext(d.view, d.from, line.text, colOffset))
 			return;
 		if (this.isInsideWikilink(line.text.substring(0, colOffset))) return;
+		if (!this.activeFileAllowsLinks()) return;
 
 		const file = this.app.workspace.getActiveFile();
 		const selfName = file?.basename ?? "";
@@ -1730,15 +1744,43 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return open;
 	}
 
-	// Whether the bulk linkers may write into this note at all.
-	isLinkableDestination(file: TFile): boolean {
-		if (file.extension !== "md") return false;
-		if (!this.passesFolderFilter(file.path)) return false;
+	// Whether Linkosaurus may change this note at all: not in a "never
+	// link" folder, not opted out by its frontmatter, not a drawing or
+	// board owned by another plugin. Applies to typing, pasting, the
+	// commands and property linking alike.
+	allowsLinksIn(file: TFile | null): boolean {
+		if (!file) return true;
+		if (isInFolders(file.path, this.neverFolders())) return false;
 		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as
 			| Record<string, unknown>
 			| undefined;
+		if (optsOutByFrontmatter(fm)) return false;
 		if (isPluginOwnedNote(file.path, fm)) return false;
 		return true;
+	}
+
+	// Whether the vault-wide linkers may write into this note: the opt-outs
+	// above plus the folder filter.
+	isLinkableDestination(file: TFile): boolean {
+		if (file.extension !== "md") return false;
+		if (!this.passesFolderFilter(file.path)) return false;
+		return this.allowsLinksIn(file);
+	}
+
+	private neverFolderCache: { raw: string; folders: string[] } | null = null;
+
+	private neverFolders(): string[] {
+		const raw = this.settings.neverLinkFolders;
+		if (this.neverFolderCache?.raw !== raw) {
+			this.neverFolderCache = { raw, folders: parseFolderList(raw) };
+		}
+		return this.neverFolderCache.folders;
+	}
+
+	// The note behind the editor being typed in. Typing always happens in
+	// the active editor, so the active file is that note.
+	private activeFileAllowsLinks(): boolean {
+		return this.allowsLinksIn(this.app.workspace.getActiveFile());
 	}
 
 	// Writes the linked version of a note. vault.process (Obsidian 1.1) reads
@@ -3106,6 +3148,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			return;
 		}
 
+		if (!this.allowsLinksIn(file)) {
+			if (showNotice) {
+				new Notice(
+					"Linkosaurus: this note is excluded from linking (folder or linkosaurus: false)."
+				);
+			}
+			return;
+		}
+
 		const allowed = parsePropertyList(this.settings.propertyLinkFields);
 		const matcher = this.propertyMatcher(file.basename);
 
@@ -3205,6 +3256,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			this.settings.blocklist = "";
 		if (typeof this.settings.folderFilter !== "string")
 			this.settings.folderFilter = "";
+		if (typeof this.settings.neverLinkFolders !== "string")
+			this.settings.neverLinkFolders = "";
 		if (
 			this.settings.folderFilterMode !== "include" &&
 			this.settings.folderFilterMode !== "exclude"
@@ -3629,6 +3682,11 @@ class AliasTargetSuggest extends EditorSuggest<AliasSuggestion> {
 	}
 }
 
+const NEVER_LINK_DESC =
+	"Notes in these folders (one per line) are never changed — not while " +
+	"typing, not by the commands. A single note opts out with the property " +
+	"linkosaurus: false.";
+
 class AutoLinkSettingTab extends PluginSettingTab {
 	plugin: AutoLinkKeywordsPlugin;
 
@@ -3978,6 +4036,23 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						value: () => plugin.settings.folderFilter,
 						onChange: (value) => {
 							plugin.settings.folderFilter = value;
+							plugin.debouncedSave();
+						},
+					}),
+			},
+			{
+				name: "Never link inside these folders",
+				desc: NEVER_LINK_DESC,
+				aliases: ["exclude", "opt out", "folders", "ignore"],
+				render: (setting: Setting) =>
+					monoTextArea(setting, {
+						name: "Never link inside these folders",
+						desc: NEVER_LINK_DESC,
+						rows: 4,
+						placeholder: "Templates\nArchive",
+						value: () => plugin.settings.neverLinkFolders,
+						onChange: (value) => {
+							plugin.settings.neverLinkFolders = value;
 							plugin.debouncedSave();
 						},
 					}),
@@ -4621,6 +4696,20 @@ class AutoLinkSettingTab extends PluginSettingTab {
 
 			this.buildVaultDetails(containerEl);
 		}
+
+		new Setting(containerEl)
+			.setName("Never link inside these folders")
+			.setDesc(NEVER_LINK_DESC)
+			.setClass("linkosaurus-textarea-mono")
+			.addTextArea((text) => {
+				text.inputEl.rows = 4;
+				text.setPlaceholder("Templates\nArchive")
+					.setValue(this.plugin.settings.neverLinkFolders)
+					.onChange((value) => {
+						this.plugin.settings.neverLinkFolders = value;
+						this.plugin.debouncedSave();
+					});
+			});
 
 		new Setting(containerEl)
 			.setName("Periodic auto-relink")
