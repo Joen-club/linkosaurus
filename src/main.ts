@@ -53,6 +53,7 @@ import {
 	type PropertyMatcher,
 } from "./properties";
 import { hashStrings, isPluginOwnedNote } from "./destination";
+import { clampRelinkInterval } from "./settings";
 
 interface AutoLinkSettings {
 	keywordList: string;
@@ -1459,7 +1460,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	startPeriodicRelink() {
 		this.stopPeriodicRelink();
 		if (!this.settings.periodicRelink) return;
-		const ms = this.settings.periodicRelinkIntervalMinutes * 60 * 1000;
+		const minutes = clampRelinkInterval(
+			this.settings.periodicRelinkIntervalMinutes
+		);
+		const ms = minutes * 60 * 1000;
 		// registerInterval clears it on unload even if stopPeriodicRelink is
 		// never reached.
 		this.relinkTimer = this.registerInterval(
@@ -2862,6 +2866,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			this.settings.foldLanguageMode = DEFAULT_SETTINGS.foldLanguageMode;
 		if (typeof this.settings.foldLanguages !== "string")
 			this.settings.foldLanguages = DEFAULT_SETTINGS.foldLanguages;
+		this.settings.periodicRelinkIntervalMinutes = clampRelinkInterval(
+			this.settings.periodicRelinkIntervalMinutes
+		);
 		this.rebuildFoldTable();
 	}
 
@@ -3587,6 +3594,12 @@ class AutoLinkSettingTab extends PluginSettingTab {
 								DEFAULT_SETTINGS.periodicRelinkIntervalMinutes,
 							min: 1,
 							max: 60,
+							validate: (value: number) => {
+								const n = Number(value);
+								if (!Number.isFinite(n) || n < 1 || n > 60)
+									return "Enter a number of minutes from 1 to 60.";
+								return;
+							},
 						},
 					},
 				],
@@ -3751,6 +3764,8 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				this.refreshDefinitions();
 				return;
 			case "periodicRelinkIntervalMinutes":
+				this.plugin.settings.periodicRelinkIntervalMinutes =
+					clampRelinkInterval(value);
 				await this.plugin.saveSettings();
 				this.plugin.startPeriodicRelink();
 				return;
