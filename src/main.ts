@@ -21,7 +21,12 @@ import {
 import * as obsidian from "obsidian";
 import { EditorView, keymap } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
-import { MapMode, Prec, type ChangeDesc } from "@codemirror/state";
+import {
+	MapMode,
+	Prec,
+	type Annotation,
+	type ChangeDesc,
+} from "@codemirror/state";
 import { isolateHistory } from "@codemirror/commands";
 import {
 	DEFAULT_LANGUAGES,
@@ -175,6 +180,20 @@ interface FoldedKey {
 	entry: IndexedEntry;
 	key: string;
 	ambiguous: boolean;
+}
+
+// Marks a transaction as its own undo step. Older Obsidian builds ship a
+// CodeMirror whose history lives elsewhere; there the link simply joins the
+// surrounding undo step, as it always did.
+function historyIsolation(): Annotation<"full"> | undefined {
+	const iso = isolateHistory as unknown as
+		| { of?: (value: "full") => Annotation<"full"> }
+		| undefined;
+	try {
+		return typeof iso?.of === "function" ? iso.of("full") : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 interface RelinkPlanItem {
@@ -903,7 +922,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				: { selection: { anchor: absStart + insert.length } }),
 			// Its own undo step: Ctrl+Z takes back the link, not the whole
 			// sentence typed before it.
-			annotations: isolateHistory.of("full"),
+			annotations: historyIsolation(),
 			userEvent: "input.autolink",
 		});
 		// Recorded after dispatching: the update listener clears any previous
@@ -958,7 +977,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		view.dispatch({
 			changes: { from: rec.from, to: end, insert: restore },
 			selection: { anchor: rec.from + restore.length },
-			annotations: isolateHistory.of("full"),
+			annotations: historyIsolation(),
 			userEvent: "delete.autolink",
 		});
 		if (this.suppressed.length >= 32) this.suppressed.shift();
