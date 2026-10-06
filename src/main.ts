@@ -722,6 +722,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		// before its own trigger's default insertion is not pushed past it.
 		if (docChanged && changes) {
 			for (const d of this.deferredAutolinks) {
+				// Changes describe one editor's document only.
+				if (d.view !== view) continue;
 				d.from = changes.mapPos(d.from, -1);
 			}
 		}
