@@ -224,6 +224,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// does not come back through the metadata cache as new work.
 	private propertyLinkWrites = new Set<string>();
 	private relinking = false;
+	// Set in onunload: async work still in flight (vault relink, layout-ready
+	// callback) checks it and stops instead of touching a dead plugin.
+	unloaded = false;
 	private aliasSuggest: AliasTargetSuggest | null = null;
 
 	async onload() {
@@ -370,8 +373,28 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.addSettingTab(new AutoLinkSettingTab(this.app, this));
 
 		this.app.workspace.onLayoutReady(() => {
+			if (this.unloaded) return;
 			this.scheduleScan();
 			this.startPeriodicRelink();
+			// Registered only once the vault has loaded: Obsidian fires a
+			// "create" for every existing file while it starts up, and each
+			// of those would otherwise queue a rescan and a vault-wide
+			// relink.
+			this.registerEvent(
+				this.app.vault.on("create", () => {
+					this.scheduleScan();
+					this.scheduleRelinkDebounced();
+				})
+			);
+			this.registerEvent(
+				this.app.vault.on("delete", () => this.scheduleScan())
+			);
+			this.registerEvent(
+				this.app.vault.on("rename", () => {
+					this.scheduleScan();
+					this.scheduleRelinkDebounced();
+				})
+			);
 		});
 
 		this.registerEvent(
@@ -382,15 +405,6 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				this.scheduleScan();
 				this.schedulePropertyLink(file);
 			})
-		);
-		this.registerEvent(
-			this.app.vault.on("create", () => {
-				this.scheduleScan();
-				this.scheduleRelinkDebounced();
-			})
-		);
-		this.registerEvent(
-			this.app.vault.on("delete", () => this.scheduleScan())
 		);
 		// Entering a property field is where the popup gets attached — the
 		// fields are created and destroyed as notes open, so there is nothing
@@ -416,15 +430,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				this.flushPropertyLinks()
 			)
 		);
-		this.registerEvent(
-			this.app.vault.on("rename", () => {
-				this.scheduleScan();
-				this.scheduleRelinkDebounced();
-			})
-		);
 	}
 
 	onunload() {
+		this.unloaded = true;
 		if (this.scanTimer !== null) window.clearTimeout(this.scanTimer);
 		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
 		this.stopPeriodicRelink();
