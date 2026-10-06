@@ -18,9 +18,10 @@ import {
 	type TFile,
 } from "obsidian";
 import * as obsidian from "obsidian";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
-import { Prec, type ChangeDesc } from "@codemirror/state";
+import { MapMode, Prec, type ChangeDesc } from "@codemirror/state";
+import { isolateHistory } from "@codemirror/commands";
 import {
 	DEFAULT_LANGUAGES,
 	LANGUAGE_PACKS,
@@ -249,6 +250,20 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private saveTimer: number | null = null;
 	private pendingUndo: PendingUndo | null = null;
 	private lastAutolink: LastAutolink | null = null;
+	// The most recent link typed into the editor, for taking it back with
+	// Backspace.
+	private revertable: {
+		view: EditorView;
+		time: number;
+		from: number;
+		insert: string;
+		// What Backspace puts back: the typed word plus the trigger
+		// character that followed it.
+		restore: string;
+		wordLength: number;
+	} | null = null;
+	// Places where the user took a link back; never re-linked there.
+	private suppressed: { view: EditorView; from: number; to: number }[] = [];
 	private deferredAutolinks: DeferredAutolink[] = [];
 	private relinkTimer: number | null = null;
 	private relinkDebounceTimer: number | null = null;
@@ -307,10 +322,22 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			),
 			EditorView.updateListener.of((update) =>
 				this.handleEditorUpdate(
+					update.view,
 					update.docChanged,
 					update.selectionSet,
 					update.changes
 				)
+			),
+			// Backspace right after an auto-link takes it back. A keymap
+			// rather than a keydown handler, so the synthesized Backspace of
+			// mobile keyboards arrives here too.
+			Prec.highest(
+				keymap.of([
+					{
+						key: "Backspace",
+						run: (view: EditorView) => this.revertAutolink(view),
+					},
+				])
 			),
 			Prec.highest(
 				EditorView.domEventHandlers({
@@ -597,10 +624,23 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	}
 
 	private handleEditorUpdate(
+		view: EditorView,
 		docChanged: boolean,
 		selectionSet: boolean,
 		changes?: ChangeDesc
 	) {
+		if (docChanged && this.revertable) this.revertable = null;
+		if (docChanged && changes && this.suppressed.length > 0) {
+			this.suppressed = this.suppressed.filter((sp) => {
+				if (sp.view !== view) return true;
+				const from = changes.mapPos(sp.from, 1, MapMode.TrackDel);
+				const to = changes.mapPos(sp.to, -1, MapMode.TrackDel);
+				if (from === null || to === null || to <= from) return false;
+				sp.from = from;
+				sp.to = to;
+				return true;
+			});
+		}
 		if (this.pendingUndo && selectionSet && !docChanged) {
 			this.clearPendingUndo();
 		}
@@ -788,29 +828,101 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return false;
 	}
 
+	// Returns false when the user took back a link at exactly this place
+	// before; the text then stays as typed. `explicit` (a pick from the
+	// popup) always links.
 	private dispatchAutolink(
 		view: EditorView,
 		absStart: number,
 		replaceEnd: number,
 		insert: string,
-		preserveCursor: boolean
-	) {
+		preserveCursor: boolean,
+		opts: {
+			// A pick from the popup: always links.
+			explicit?: boolean;
+			// Where the matched word ends (before any trigger character).
+			matchEnd?: number;
+			// The trigger character(s) appended after the link.
+			trailing?: string;
+		} = {}
+	): boolean {
+		const matchEnd = opts.matchEnd ?? replaceEnd;
+		if (!opts.explicit && this.isSuppressed(view, absStart, matchEnd))
+			return false;
 		const oldText = view.state.doc.sliceString(absStart, replaceEnd);
+		const word = view.state.doc.sliceString(absStart, matchEnd);
 		view.dispatch({
 			changes: { from: absStart, to: replaceEnd, insert },
 			...(preserveCursor
 				? {}
 				: { selection: { anchor: absStart + insert.length } }),
+			// Its own undo step: Ctrl+Z takes back the link, not the whole
+			// sentence typed before it.
+			annotations: isolateHistory.of("full"),
+			userEvent: "input.autolink",
 		});
 		// Recorded after dispatching: the update listener clears any previous
 		// record on doc changes, then we install the fresh one.
+		const now = Date.now();
 		this.lastAutolink = {
 			view,
-			time: Date.now(),
+			time: now,
 			from: absStart,
 			to: replaceEnd,
 			text: oldText,
 		};
+		this.revertable = preserveCursor
+			? null
+			: {
+					view,
+					time: now,
+					from: absStart,
+					insert,
+					restore: word + (opts.trailing ?? ""),
+					wordLength: word.length,
+				};
+		return true;
+	}
+
+	private isSuppressed(view: EditorView, from: number, to: number): boolean {
+		return this.suppressed.some(
+			(sp) => sp.view === view && sp.from === from && sp.to === to
+		);
+	}
+
+	// Backspace within a few seconds of an auto-link, with the cursor still
+	// right behind it, restores the typed text and remembers the place so
+	// the next space does not link it again.
+	private revertAutolink(view: EditorView): boolean {
+		const rec = this.revertable;
+		if (!rec || rec.view !== view) return false;
+		if (Date.now() - rec.time > 3000) {
+			this.revertable = null;
+			return false;
+		}
+		const sel = view.state.selection.main;
+		const end = rec.from + rec.insert.length;
+		if (!sel.empty || sel.head !== end) return false;
+		if (view.state.doc.sliceString(rec.from, end) !== rec.insert) return false;
+
+		// The trigger character typed after the word (space, punctuation)
+		// stays; only the link turns back into the typed word.
+		const restore = rec.restore;
+		this.revertable = null;
+		this.clearPendingUndo();
+		view.dispatch({
+			changes: { from: rec.from, to: end, insert: restore },
+			selection: { anchor: rec.from + restore.length },
+			annotations: isolateHistory.of("full"),
+			userEvent: "delete.autolink",
+		});
+		if (this.suppressed.length >= 32) this.suppressed.shift();
+		this.suppressed.push({
+			view,
+			from: rec.from,
+			to: rec.from + rec.wordLength,
+		});
+		return true;
 	}
 
 	private tryAutolinkBeforeCursor(
@@ -848,14 +960,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				const absStart = line.from + emailMatch.start;
 				const insert =
 					formatEmailAsMarkdownLink(emailMatch.address) + trailing;
-				this.dispatchAutolink(
+				return this.dispatchAutolink(
 					view,
 					absStart,
 					replaceEnd,
 					insert,
-					preserveCursor
+					preserveCursor,
+					{ matchEnd: pos, trailing }
 				);
-				return true;
 			}
 		}
 
@@ -864,14 +976,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const absStart = line.from + urlMatch.start;
 			const insert =
 				this.formatUrlAsMarkdownLink(urlMatch.url) + trailing;
-			this.dispatchAutolink(
+			return this.dispatchAutolink(
 				view,
 				absStart,
 				replaceEnd,
 				insert,
-				preserveCursor
+				preserveCursor,
+				{ matchEnd: pos, trailing }
 			);
-			return true;
 		}
 
 		const alias = this.matchAlias(textBefore);
@@ -883,14 +995,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const link = formatAliasLink(alias.target, alias.displayText);
 			if (!link) return false;
 			const insert = link + trailing;
-			this.dispatchAutolink(
+			return this.dispatchAutolink(
 				view,
 				absStart,
 				replaceEnd,
 				insert,
-				preserveCursor
+				preserveCursor,
+				{ matchEnd: pos, trailing }
 			);
-			return true;
 		}
 
 		const direct = this.matchKeyword(textBefore);
@@ -902,13 +1014,17 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const link = formatWikilink(direct.keyword, direct.target);
 			if (!link) return false;
 			const insert = link + trailing;
-			this.dispatchAutolink(
-				view,
-				absStart,
-				replaceEnd,
-				insert,
-				preserveCursor
-			);
+			if (
+				!this.dispatchAutolink(
+					view,
+					absStart,
+					replaceEnd,
+					insert,
+					preserveCursor,
+					{ matchEnd: pos, trailing }
+				)
+			)
+				return false;
 
 			if (setupPendingUndo) {
 				const kwNorm = this.foldKey(direct.keyword);
@@ -2625,7 +2741,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				editor.posToOffset(context.start),
 				editor.posToOffset(context.end),
 				insert,
-				false
+				false,
+				{ explicit: true }
 			);
 		} else {
 			editor.replaceRange(insert, context.start, context.end);
