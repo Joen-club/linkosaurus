@@ -110,6 +110,10 @@ With both `Open` and `Open Source` in your list:
 
 If your next character *can't* continue the longer term (`Open H…`), the original `[[Open]]` link simply stays. You never have to think about it.
 
+### Changed your mind? Backspace.
+
+Press **Backspace** right after a link appears and it turns back into the word you typed — like taking back an autocorrect. Linkosaurus remembers that spot and won't link it again. **Ctrl/Cmd+Z** also takes back just the link, not the sentence before it.
+
 ### Alias autocomplete, in full
 
 The suggestion popup only appears inside the alias syntax (`//` and `///`, including custom delimiters) — normal typing stays popup-free. Keep typing to narrow the list (`Tky` still finds Tokyo), press Esc to dismiss without a trace, or finish the alias by hand; the popup never picks for you. Both accept keys have their own toggle: turn Enter off to keep it for line breaks and link with Tab alone, or the other way around.
@@ -196,7 +200,8 @@ Off by default; turn it on if you like your whole vault kept in sync.
 | Command | What it does |
 |---------|--------------|
 | **Auto-link keywords in current note** | Links every matching keyword in the note you're in, in one pass |
-| **Auto-link keywords in all notes** | A one-shot sweep across the whole vault (open notes are skipped) |
+| **Auto-link keywords in all notes** | A sweep across the whole vault: first a preview (how many links in how many notes), then the write with progress. Open notes are skipped |
+| **Undo last vault-wide link** | Puts back every note from the last sweep that you haven't edited since |
 | **Link selection and add to keyword list** | Links the selected word *and* remembers it as a keyword — assign a hotkey for the fastest possible workflow |
 
 ### Where Linkosaurus stays out of the way
@@ -208,6 +213,9 @@ It deliberately does nothing:
 - Inside fenced or inline code blocks
 - Inside URLs (unless URL auto-linking is on)
 - Inside YAML frontmatter
+- Inside `#tags`, `%%comments%%` and `$math$`
+- In notes you opted out: list folders under **Never link inside these folders**, or give a single note the property `linkosaurus: false`
+- In Excalidraw drawings and Kanban boards
 
 ## Keyword list syntax
 
@@ -251,6 +259,7 @@ Linkosaurus ships with more knobs than most people will ever need — every opti
 | **Blocklist** | Keywords excluded from auto-linking (e.g. `Home`, `Inbox`, `Daily`) |
 | **Folder filter mode** | Include or exclude folders |
 | **Folder filter** | Folders to filter from vault scanning |
+| **Never link inside these folders** | Notes here are never changed — not while typing, not by the commands |
 | **Enable periodic auto-relink** | Periodic vault scan that retroactively links keywords (off by default) |
 | **Relink interval (minutes)** | How often to scan (1–60 minutes, default 5) |
 | **Auto-link website URLs** | Convert `http(s)://…` and bare domains to Markdown links (on by default) |
