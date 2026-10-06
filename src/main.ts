@@ -553,7 +553,27 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 	// Must run before anything that folds — parseBlocklist and
 	// parseManualKeywords both bake the current table into their output.
+	// foldVariants per keyword, valid for the current fold table. A rescan
+	// rebuilds the index from mostly the same keywords, so this saves
+	// re-folding every note name each time.
+	private foldVariantCache = new Map<string, string[]>();
+
+	private foldVariantsCached(keyword: string): string[] {
+		let variants = this.foldVariantCache.get(keyword);
+		if (variants === undefined) {
+			// Renames leave old names behind; start over rather than grow
+			// without bound.
+			if (this.foldVariantCache.size > 4 * this.entries.length + 5000) {
+				this.foldVariantCache.clear();
+			}
+			variants = foldVariants(keyword, this.foldTable);
+			this.foldVariantCache.set(keyword, variants);
+		}
+		return variants;
+	}
+
 	rebuildFoldTable() {
+		this.foldVariantCache.clear();
 		this.foldTable = buildFoldTable({
 			enabled: this.settings.foldDiacritics,
 			lowercase: this.settings.caseInsensitive,
@@ -2037,7 +2057,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const exact = this.normalize(entry.keyword);
 			if (seenExact.has(exact)) return;
 
-			const folded = foldVariants(entry.keyword, this.foldTable);
+			const folded = this.foldVariantsCached(entry.keyword);
 			if (folded.length === 0) return;
 
 			if (!manual) {
