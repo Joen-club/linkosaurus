@@ -42,6 +42,7 @@ import {
 } from "./email";
 import {
 	SETTINGS_VERSION,
+	frontmatterSnapshot,
 	isLinkableProperty,
 	isPropertyValueField,
 	linkFrontmatter,
@@ -244,6 +245,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// Timers that drop a file from propertyLinkWrites after the echo of our
 	// own write has passed.
 	private propertyEchoTimers = new Set<number>();
+	// Last seen frontmatter per note, so a save that only changed the body
+	// does not run property linking.
+	private frontmatterSnapshots = new Map<string, string>();
 	private propertyFocusTimer: number | null = null;
 	// Files this plugin is currently writing to, so its own frontmatter edit
 	// does not come back through the metadata cache as new work.
@@ -462,6 +466,12 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			this.app.workspace.on("active-leaf-change", () =>
 				this.flushPropertyLinks()
 			)
+		);
+		// The baseline for telling property edits from body edits.
+		this.registerEvent(
+			this.app.workspace.on("file-open", (file) => {
+				if (file && file.extension === "md") this.rememberFrontmatter(file);
+			})
 		);
 	}
 
@@ -2622,13 +2632,33 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (!this.settings.propertyLinkEnabled) return;
 		if (!this.settings.propertyLinkOnEdit) return;
 		if (file.extension !== "md") return;
-		if (this.propertyLinkWrites.has(file.path)) return;
+		if (this.propertyLinkWrites.has(file.path)) {
+			this.rememberFrontmatter(file);
+			return;
+		}
 		// Only the note in front of the user. A change arriving from sync or
 		// another plugin must never cascade edits across the vault.
 		if (this.app.workspace.getActiveFile()?.path !== file.path) return;
+		// Typing in the body saves the note too; only a changed property is
+		// work for us. Without a snapshot (first save seen) it runs as before.
+		const previous = this.frontmatterSnapshots.get(file.path);
+		const current = this.rememberFrontmatter(file);
+		if (previous !== undefined && previous === current) return;
 
 		this.pendingPropertyLinks.set(file.path, file);
 		this.armPropertyLinkTimer(file);
+	}
+
+	private rememberFrontmatter(file: TFile): string {
+		const snapshot = frontmatterSnapshot(
+			this.app.metadataCache.getFileCache(file)?.frontmatter as
+				| Record<string, unknown>
+				| undefined
+		);
+		// Only the notes the user had open matter; keep the map small.
+		if (this.frontmatterSnapshots.size > 200) this.frontmatterSnapshots.clear();
+		this.frontmatterSnapshots.set(file.path, snapshot);
+		return snapshot;
 	}
 
 	private armPropertyLinkTimer(file: TFile) {
@@ -2710,7 +2740,26 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			foldKey: (text: string) => this.foldKey(text),
 			exactKey: (text: string) => this.normalize(text),
 			prefixMatchEnabled,
+			propertyType: (name: string) => this.propertyType(name),
 		};
+	}
+
+	// The type Obsidian assigned to a property (1.4+). Not public API, so
+	// the lookup is guarded; no answer means "unknown", which is allowed.
+	private propertyType(name: string): string | undefined {
+		const manager = (
+			this.app as unknown as {
+				metadataTypeManager?: {
+					getAssignedType?: (name: string) => unknown;
+				};
+			}
+		).metadataTypeManager;
+		try {
+			const type = manager?.getAssignedType?.(name);
+			return typeof type === "string" ? type : undefined;
+		} catch {
+			return undefined;
+		}
 	}
 
 	// Frontmatter writing arrived in Obsidian 1.4.4, well after this plugin's

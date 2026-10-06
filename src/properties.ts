@@ -45,6 +45,69 @@ export interface PropertyMatcher {
 	 */
 	exactKey: (text: string) => string;
 	prefixMatchEnabled: boolean;
+	/**
+	 * The type Obsidian assigned to a property ("text", "date", …), when
+	 * known. Optional: older Obsidian versions have no property types.
+	 */
+	propertyType?: (name: string) => string | undefined;
+}
+
+/** A typed prefix shorter than this never completes to a note name. */
+export const MIN_PREFIX_LENGTH = 3;
+
+/** Property types whose values are names and may become links. */
+const LINKABLE_TYPES = new Set(["text", "multitext"]);
+
+/**
+ * Whether a property of this Obsidian type can hold a link. Unknown types
+ * (no type API, or a type this code does not know yet) are allowed, as before
+ * property types existed.
+ */
+export function isLinkablePropertyType(type: string | undefined): boolean {
+	if (!type) return true;
+	const known = new Set([
+		"text",
+		"multitext",
+		"number",
+		"checkbox",
+		"date",
+		"datetime",
+		"aliases",
+		"tags",
+	]);
+	if (!known.has(type)) return true;
+	return LINKABLE_TYPES.has(type);
+}
+
+/**
+ * Dates, times, numbers and booleans written as text. They are values, not
+ * names: "2024" or "true" must never turn into a link even when a note
+ * happens to carry that name.
+ */
+export function looksLikeScalarValue(text: string): boolean {
+	const t = text.trim();
+	if (/^[+-]?\d+(?:[.,]\d+)*%?$/.test(t)) return true;
+	if (/^\d{4}-\d{2}(?:-\d{2})?(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/.test(t))
+		return true;
+	if (/^\d{1,2}[./]\d{1,2}[./]\d{2,4}$/.test(t)) return true;
+	if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(t)) return true;
+	if (/^(?:true|false|null)$/i.test(t)) return true;
+	return false;
+}
+
+/**
+ * A comparable fingerprint of a note's frontmatter, so a save that only
+ * touched the body can be told apart from one that changed a property.
+ */
+export function frontmatterSnapshot(
+	frontmatter: Record<string, unknown> | undefined | null
+): string {
+	if (!frontmatter) return "";
+	try {
+		return JSON.stringify(frontmatter);
+	} catch {
+		return String(Math.random());
+	}
 }
 
 /** Current settings schema. Raise this when defaults must reach existing vaults. */
@@ -170,6 +233,7 @@ export function linkPropertyValue(
 	if (text.includes("[[") || text.includes("](")) return null;
 	// Values carrying markup or line breaks are not plain names.
 	if (/[\n\r|#^]/.test(text)) return null;
+	if (looksLikeScalarValue(text)) return null;
 
 	const resolved = resolveTarget(text, matcher);
 	if (!resolved) return null;
@@ -197,6 +261,8 @@ function resolveTarget(
 	if (exact) return { target: exact, viaPrefix: false };
 
 	if (!matcher.prefixMatchEnabled) return undefined;
+	// "Mu" completing to a note is a guess, not a name.
+	if (matcher.foldKey(text).length < MIN_PREFIX_LENGTH) return undefined;
 
 	// "Museum" should find "Museum of Natural History" — but only when there is
 	// exactly one candidate. Two notes starting the same way is a coin flip,
@@ -222,6 +288,7 @@ export function linkFrontmatter(
 
 	for (const [name, value] of Object.entries(frontmatter)) {
 		if (!isLinkableProperty(name, allowed)) continue;
+		if (!isLinkablePropertyType(matcher.propertyType?.(name))) continue;
 
 		if (Array.isArray(value)) {
 			let touched = false;

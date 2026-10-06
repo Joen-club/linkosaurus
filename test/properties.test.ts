@@ -327,3 +327,56 @@ test("reports no changes when there is nothing to do", () => {
 	);
 	assert.equal(changes.size, 0);
 });
+
+import {
+	MIN_PREFIX_LENGTH,
+	frontmatterSnapshot,
+	isLinkablePropertyType,
+	looksLikeScalarValue,
+} from "../src/properties";
+
+test("dates, times, numbers and booleans are never linked", () => {
+	const dated = matcher({
+		lookup: (v) => (v === "2024-05-01" || v === "true" || v === "42" ? "Note" : undefined),
+	});
+	assert.equal(linkPropertyValue("2024-05-01", dated), null);
+	assert.equal(linkPropertyValue("true", dated), null);
+	assert.equal(linkPropertyValue("42", dated), null);
+});
+
+test("looksLikeScalarValue recognises common scalar spellings", () => {
+	for (const v of ["2024", "3.5", "1,5", "-7", "50%", "2024-05-01", "2024-05", "2024-05-01T10:30", "2024-05-01 10:30:00", "01.05.2024", "10:30", "TRUE", "false", "null"]) {
+		assert.equal(looksLikeScalarValue(v), true, v);
+	}
+	for (const v of ["Tokyo", "Route 66", "2024 Review", "R2D2", "v1.2 notes"]) {
+		assert.equal(looksLikeScalarValue(v), false, v);
+	}
+});
+
+test("prefix completion needs at least three characters", () => {
+	assert.equal(MIN_PREFIX_LENGTH, 3);
+	assert.equal(linkPropertyValue("Mu", matcher()), null);
+	assert.equal(linkPropertyValue("Mus", matcher()), "[[Museum of Natural History]]");
+});
+
+test("only text-like property types are linked", () => {
+	assert.equal(isLinkablePropertyType("text"), true);
+	assert.equal(isLinkablePropertyType("multitext"), true);
+	assert.equal(isLinkablePropertyType(undefined), true);
+	assert.equal(isLinkablePropertyType("some-future-type"), true);
+	for (const t of ["date", "datetime", "number", "checkbox", "tags", "aliases"]) {
+		assert.equal(isLinkablePropertyType(t), false, t);
+	}
+	const typed = matcher({
+		propertyType: (name) => (name === "due" ? "date" : "text"),
+	});
+	const changes = linkFrontmatter({ due: "Tokyo", city: "Tokyo" }, [], typed);
+	assert.deepEqual([...changes.keys()], ["city"]);
+});
+
+test("frontmatterSnapshot tells property edits from body edits", () => {
+	const a = frontmatterSnapshot({ author: "Tokyo" });
+	assert.equal(a, frontmatterSnapshot({ author: "Tokyo" }));
+	assert.notEqual(a, frontmatterSnapshot({ author: "Tokyo2" }));
+	assert.equal(frontmatterSnapshot(undefined), "");
+});
