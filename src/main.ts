@@ -230,6 +230,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private blocklistSet = new Set<string>();
 	private tldSet = new Set<string>();
 	private scanTimer: number | null = null;
+	private scanFirstRequest = 0;
+	private sawResolved = false;
+	// Per note: a hash of what it contributes to the keyword index.
+	private keywordSignatures = new Map<string, string>();
 	private saveTimer: number | null = null;
 	private pendingUndo: PendingUndo | null = null;
 	private lastAutolink: LastAutolink | null = null;
@@ -416,7 +420,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		this.app.workspace.onLayoutReady(() => {
 			if (this.unloaded) return;
-			this.scheduleScan();
+			// The first index is built right away; only later rescans are
+			// debounced.
+			this.scheduleScan(true);
 			this.startPeriodicRelink();
 			// Registered only once the vault has loaded: Obsidian fires a
 			// "create" for every existing file while it starts up, and each
@@ -429,22 +435,35 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				})
 			);
 			this.registerEvent(
-				this.app.vault.on("delete", () => this.scheduleScan())
+				this.app.vault.on("delete", (file) => {
+					this.forgetPath(file.path);
+					this.scheduleScan();
+				})
 			);
 			this.registerEvent(
-				this.app.vault.on("rename", () => {
+				this.app.vault.on("rename", (_file, oldPath) => {
+					this.forgetPath(oldPath);
 					this.scheduleScan();
 					this.scheduleRelinkDebounced();
 				})
 			);
 		});
 
+		// "resolved" fires after every change once the cache is warm; only
+		// the first one — the cache finishing its initial pass — matters.
 		this.registerEvent(
-			this.app.metadataCache.on("resolved", () => this.scheduleScan())
+			this.app.metadataCache.on("resolved", () => {
+				if (this.sawResolved) return;
+				this.sawResolved = true;
+				this.scheduleScan();
+			})
 		);
+		// Every autosave while typing reports a change. The index only
+		// depends on a note's name, aliases and outgoing links, so a rescan
+		// runs only when one of those changed.
 		this.registerEvent(
 			this.app.metadataCache.on("changed", (file) => {
-				this.scheduleScan();
+				if (this.keywordSignatureChanged(file)) this.scheduleScan();
 				this.schedulePropertyLink(file);
 			})
 		);
@@ -1661,21 +1680,70 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 	}
 
-	private scheduleScan() {
+	// Debounced by 2 s, but never postponed for more than 5 s in total, so
+	// a stream of changes (sync, bulk rename) cannot starve the index.
+	private scheduleScan(immediate = false) {
 		if (this.unloaded || !this.settings.scanVaultLinks) return;
+		const now = Date.now();
 		if (this.scanTimer !== null) window.clearTimeout(this.scanTimer);
+		else this.scanFirstRequest = now;
+		const delay = immediate
+			? 0
+			: Math.max(0, Math.min(2000, this.scanFirstRequest + 5000 - now));
 		this.scanTimer = window.setTimeout(() => {
-			this.scanVaultLinks();
 			this.scanTimer = null;
-		}, 2000);
+			this.scanVaultLinks();
+		}, delay);
+	}
+
+	// What a note contributes to the keyword index: its name, its aliases
+	// and the names it links to.
+	private keywordSignature(file: TFile): string {
+		const cache = this.app.metadataCache.getFileCache(file);
+		const parts: string[] = [file.basename];
+		if (this.settings.scanFrontmatterAliases && cache?.frontmatter) {
+			const fm = cache.frontmatter as Record<string, unknown>;
+			const raw: unknown = fm.aliases ?? fm.alias;
+			if (Array.isArray(raw)) parts.push(...raw.map((a) => String(a)));
+			else if (typeof raw === "string") parts.push(raw);
+		}
+		parts.push("\u0001");
+		if (cache?.links) {
+			const links = cache.links.map((l) => l.link);
+			links.sort();
+			parts.push(...links);
+		}
+		return hashStrings(parts);
+	}
+
+	private keywordSignatureChanged(file: TFile): boolean {
+		if (!this.settings.scanVaultLinks) return false;
+		if (file.extension !== "md") return false;
+		if (!this.passesFolderFilter(file.path)) {
+			this.keywordSignatures.delete(file.path);
+			return false;
+		}
+		const next = this.keywordSignature(file);
+		const previous = this.keywordSignatures.get(file.path);
+		this.keywordSignatures.set(file.path, next);
+		return previous !== next;
+	}
+
+	// Drops per-path caches for a note that was deleted or moved away.
+	private forgetPath(path: string) {
+		this.keywordSignatures.delete(path);
+		this.relinkSkip.delete(path);
+		this.frontmatterSnapshots.delete(path);
 	}
 
 	private scanVaultLinks() {
 		const seen = new Set<string>();
 		this.vaultEntries = [];
+		const signatures = new Map<string, string>();
 
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (!this.passesFolderFilter(file.path)) continue;
+			signatures.set(file.path, this.keywordSignature(file));
 
 			const noteName = file.basename.trim();
 			if (!noteName) continue;
@@ -1742,6 +1810,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			}
 		}
 
+		this.keywordSignatures = signatures;
 		this.rebuildEntries();
 	}
 
