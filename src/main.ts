@@ -1814,9 +1814,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	allowsLinksIn(file: TFile | null): boolean {
 		if (!file) return true;
 		if (isInFolders(file.path, this.neverFolders())) return false;
-		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as
-			| Record<string, unknown>
-			| undefined;
+		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
 		if (optsOutByFrontmatter(fm)) return false;
 		if (isPluginOwnedNote(file.path, fm)) return false;
 		return true;
@@ -3281,9 +3279,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 	private rememberFrontmatter(file: TFile): string {
 		const snapshot = frontmatterSnapshot(
-			this.app.metadataCache.getFileCache(file)?.frontmatter as
-				| Record<string, unknown>
-				| undefined
+			this.app.metadataCache.getFileCache(file)?.frontmatter
 		);
 		// Only the notes the user had open matter; keep the map small.
 		if (this.frontmatterSnapshots.size > 200) this.frontmatterSnapshots.clear();
@@ -3599,10 +3595,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.rebuildFoldTable();
 		// onload parses everything right after this; that is the baseline
 		// later saves are compared with.
-		this.appliedSettings = { ...this.settings } as unknown as Record<
-			string,
-			unknown
-		>;
+		this.appliedSettings = { ...this.settings };
 	}
 
 	async saveSettings() {
