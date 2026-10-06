@@ -936,6 +936,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return false;
 	}
 
+	// Whether replaceKeywordsInText can change anything at all.
+	private hasBulkWork(): boolean {
+		return (
+			this.entries.length > 0 ||
+			this.settings.urlAutolinkEnabled ||
+			this.settings.emailAutolinkEnabled
+		);
+	}
+
 	private handleBulkInput(
 		view: EditorView,
 		from: number,
@@ -950,7 +959,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			return false;
 		}
 
-		if (this.entries.length === 0) return false;
+		if (!this.hasBulkWork()) return false;
 		if (text.length > 10000) return false;
 
 		const state = view.state;
@@ -1001,7 +1010,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private handlePaste(event: ClipboardEvent, view: EditorView): boolean {
 		const text = event.clipboardData?.getData("text/plain");
 		if (!text || text.length > 10000) return false;
-		if (this.entries.length === 0) return false;
+		// URLs and email addresses link without any keyword.
+		if (!this.hasBulkWork()) return false;
 
 		const state = view.state;
 		const { from, to } = state.selection.main;
@@ -1502,7 +1512,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		// Pass 1: transform the committed range itself, linking every
 		// keyword/URL inside it (dictated sentences, swiped words).
-		if (this.entries.length > 0) {
+		if (this.hasBulkWork()) {
 			const charBefore =
 				d.from > 0 ? state.doc.sliceString(d.from - 1, d.from) : "";
 			const charAfter =
@@ -3858,7 +3868,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 			{
 				type: "group",
 				heading: "Periodic auto-relink",
-				visible: vaultScanOn,
 				items: [
 					{
 						name: "Enable periodic auto-relink",
@@ -3897,7 +3906,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				desc:
 					"Convert URLs to Markdown links while typing or pasting. " +
 					"Detects http(s)://... and bare domains (e.g. example.com).",
-				visible: vaultScanOn,
 				control: {
 					type: "toggle",
 					key: "urlAutolinkEnabled",
@@ -3909,9 +3917,7 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				desc:
 					"TLDs to detect for bare domains (one per line, without leading dot). " +
 					"Only affects bare domains — http(s):// URLs always link.",
-				visible: () =>
-					plugin.settings.scanVaultLinks &&
-					plugin.settings.urlAutolinkEnabled,
+				visible: () => plugin.settings.urlAutolinkEnabled,
 				render: (setting: Setting) =>
 					monoTextArea(setting, {
 						name: "URL top-level domains",
@@ -4029,18 +4035,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 		settings[key] = value;
 
 		switch (key) {
-			case "singleWordDelimiter":
-			case "multiWordDelimiter": {
-				await this.plugin.saveSettings();
-				const sw = this.plugin.settings.singleWordDelimiter;
-				const mw = this.plugin.settings.multiWordDelimiter;
-				if (sw.includes(mw) || mw.includes(sw)) {
-					new Notice(
-						"Warning: one delimiter is a substring of the other. This may cause parsing conflicts."
-					);
-				}
-				return;
-			}
 			case "periodicRelink":
 				await this.plugin.saveSettings();
 				if (value) {
@@ -4056,17 +4050,15 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				await this.plugin.saveSettings();
 				this.plugin.startPeriodicRelink();
 				return;
-			case "aliasSuggestEnabled":
-			case "scanVaultLinks":
-			case "urlAutolinkEnabled":
-			case "foldDiacritics":
-			case "foldLanguageMode":
-			case "propertyLinkEnabled":
-				await this.plugin.saveSettings();
-				this.refreshDefinitions();
-				return;
 			default:
 				await this.plugin.saveSettings();
+				// Visibility of other rows hangs on several toggles and
+				// dropdowns (noteSearchEnabled, aliasSuggestEnabled, …);
+				// re-evaluating it after every such change keeps a
+				// hand-kept list from drifting. Text and number fields are
+				// left alone so a re-render never steals focus mid-typing.
+				if (typeof value === "boolean" || typeof value === "string" && (key === "foldLanguageMode" || key === "folderFilterMode"))
+					this.refreshDefinitions();
 		}
 	}
 
@@ -4272,20 +4264,16 @@ class AutoLinkSettingTab extends PluginSettingTab {
 							setError(true);
 							return;
 						}
-						if (value === this.plugin.settings.multiWordDelimiter) {
+						if (
+							value === this.plugin.settings.multiWordDelimiter ||
+							value === this.plugin.settings.noteSearchTrigger
+						) {
 							setError(true);
-							new Notice("Single-word and multi-word delimiters must be different.");
 							return;
 						}
 						setError(false);
 						this.plugin.settings.singleWordDelimiter = value;
 						await this.plugin.saveSettings();
-						if (
-							value.includes(this.plugin.settings.multiWordDelimiter) ||
-							this.plugin.settings.multiWordDelimiter.includes(value)
-						) {
-							new Notice("Warning: one delimiter is a substring of the other. This may cause parsing conflicts.");
-						}
 					});
 			});
 
@@ -4306,20 +4294,16 @@ class AutoLinkSettingTab extends PluginSettingTab {
 							setError(true);
 							return;
 						}
-						if (value === this.plugin.settings.singleWordDelimiter) {
+						if (
+							value === this.plugin.settings.singleWordDelimiter ||
+							value === this.plugin.settings.noteSearchTrigger
+						) {
 							setError(true);
-							new Notice("Single-word and multi-word delimiters must be different.");
 							return;
 						}
 						setError(false);
 						this.plugin.settings.multiWordDelimiter = value;
 						await this.plugin.saveSettings();
-						if (
-							value.includes(this.plugin.settings.singleWordDelimiter) ||
-							this.plugin.settings.singleWordDelimiter.includes(value)
-						) {
-							new Notice("Warning: one delimiter is a substring of the other. This may cause parsing conflicts.");
-						}
 					});
 			});
 
@@ -4340,7 +4324,53 @@ class AutoLinkSettingTab extends PluginSettingTab {
 					});
 			});
 
-		if (this.plugin.settings.aliasSuggestEnabled) {
+		new Setting(containerEl)
+			.setName("Note search popup")
+			.setDesc(
+				"Type the search trigger to open a popup listing every " +
+				"linkable note and keyword, filtering as you type — " +
+				"spaces allowed. Example: ;;feed → [[T-Rex - Feeding Schedule]]"
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.noteSearchEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.noteSearchEnabled = value;
+						await this.plugin.saveSettings();
+						this.renderLegacy();
+					});
+			});
+
+		if (this.plugin.settings.noteSearchEnabled) {
+			new Setting(containerEl)
+				.setName("Search trigger")
+				.setDesc("Characters that open the note search popup.")
+				.setClass("linkosaurus-input-delim")
+				.addText((text) => {
+					const setError = (on: boolean) =>
+						text.inputEl.toggleClass("linkosaurus-input-error", on);
+					text.setPlaceholder(";;")
+						.setValue(this.plugin.settings.noteSearchTrigger)
+						.onChange(async (value) => {
+							if (
+								!value ||
+								value === this.plugin.settings.singleWordDelimiter ||
+								value === this.plugin.settings.multiWordDelimiter
+							) {
+								setError(true);
+								return;
+							}
+							setError(false);
+							this.plugin.settings.noteSearchTrigger = value;
+							await this.plugin.saveSettings();
+						});
+				});
+		}
+
+		if (
+			this.plugin.settings.aliasSuggestEnabled ||
+			this.plugin.settings.noteSearchEnabled
+		) {
 			new Setting(containerEl)
 				.setName("Accept suggestion with Enter")
 				.setDesc(
@@ -4472,91 +4502,91 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						});
 				});
 
-			new Setting(containerEl)
-				.setName("Periodic auto-relink")
-				.setHeading();
-
-			new Setting(containerEl)
-				.setName("Enable periodic auto-relink")
-				.setDesc(
-					"Periodically scan all notes and retroactively convert plain-text keywords to wikilinks. " +
-					"Notes currently open in the editor are skipped to avoid cursor jumps."
-				)
-				.addToggle((toggle) => {
-					toggle
-						.setValue(this.plugin.settings.periodicRelink)
-						.onChange(async (value) => {
-							this.plugin.settings.periodicRelink = value;
-							await this.plugin.saveSettings();
-							if (value) {
-								this.plugin.startPeriodicRelink();
-							} else {
-								this.plugin.stopPeriodicRelink();
-							}
-							this.renderLegacy();
-						});
-				});
-
-			if (this.plugin.settings.periodicRelink) {
-				new Setting(containerEl)
-					.setName("Relink interval (minutes)")
-					.setDesc(
-						"How often to scan the vault for unlinkable keywords (1–60 minutes)."
-					)
-					.setClass("linkosaurus-input-number")
-					.addText((text) => {
-						text.inputEl.type = "number";
-						text.inputEl.min = "1";
-						text.inputEl.max = "60";
-						text.setValue(
-							String(this.plugin.settings.periodicRelinkIntervalMinutes)
-						).onChange(async (value) => {
-							const num = parseInt(value, 10);
-							if (!isNaN(num) && num >= 1 && num <= 60) {
-								this.plugin.settings.periodicRelinkIntervalMinutes = num;
-								await this.plugin.saveSettings();
-								this.plugin.startPeriodicRelink();
-							}
-						});
-					});
-			}
-
-			new Setting(containerEl)
-				.setName("Auto-link website URLs")
-				.setDesc(
-					"Convert URLs to Markdown links while typing or pasting. " +
-					"Detects http(s)://... and bare domains (e.g. example.com)."
-				)
-				.addToggle((toggle) => {
-					toggle
-						.setValue(this.plugin.settings.urlAutolinkEnabled)
-						.onChange(async (value) => {
-							this.plugin.settings.urlAutolinkEnabled = value;
-							await this.plugin.saveSettings();
-							this.renderLegacy();
-						});
-				});
-
-			if (this.plugin.settings.urlAutolinkEnabled) {
-				new Setting(containerEl)
-					.setName("URL top-level domains")
-					.setDesc(
-						"TLDs to detect for bare domains (one per line, without leading dot). " +
-						"Only affects bare domains — http(s):// URLs always link."
-					)
-					.setClass("linkosaurus-textarea-mono")
-					.addTextArea((text) => {
-						text.inputEl.rows = 6;
-						text.setPlaceholder("de\ncom\norg")
-							.setValue(this.plugin.settings.urlAutolinkTlds)
-							.onChange((value) => {
-								this.plugin.settings.urlAutolinkTlds = value;
-								this.plugin.debouncedSave();
-							});
-					});
-			}
-
 			this.buildVaultDetails(containerEl);
+		}
+
+		new Setting(containerEl)
+			.setName("Periodic auto-relink")
+			.setHeading();
+
+		new Setting(containerEl)
+			.setName("Enable periodic auto-relink")
+			.setDesc(
+				"Periodically scan all notes and retroactively convert plain-text keywords to wikilinks. " +
+				"Notes currently open in the editor are skipped to avoid cursor jumps."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.periodicRelink)
+					.onChange(async (value) => {
+						this.plugin.settings.periodicRelink = value;
+						await this.plugin.saveSettings();
+						if (value) {
+							this.plugin.startPeriodicRelink();
+						} else {
+							this.plugin.stopPeriodicRelink();
+						}
+						this.renderLegacy();
+					});
+			});
+
+		if (this.plugin.settings.periodicRelink) {
+			new Setting(containerEl)
+				.setName("Relink interval (minutes)")
+				.setDesc(
+					"How often to scan the vault for unlinkable keywords (1–60 minutes)."
+				)
+				.setClass("linkosaurus-input-number")
+				.addText((text) => {
+					text.inputEl.type = "number";
+					text.inputEl.min = "1";
+					text.inputEl.max = "60";
+					text.setValue(
+						String(this.plugin.settings.periodicRelinkIntervalMinutes)
+					).onChange(async (value) => {
+						const num = parseInt(value, 10);
+						if (!isNaN(num) && num >= 1 && num <= 60) {
+							this.plugin.settings.periodicRelinkIntervalMinutes = num;
+							await this.plugin.saveSettings();
+							this.plugin.startPeriodicRelink();
+						}
+					});
+				});
+		}
+
+		new Setting(containerEl)
+			.setName("Auto-link website URLs")
+			.setDesc(
+				"Convert URLs to Markdown links while typing or pasting. " +
+				"Detects http(s)://... and bare domains (e.g. example.com)."
+			)
+			.addToggle((toggle) => {
+				toggle
+					.setValue(this.plugin.settings.urlAutolinkEnabled)
+					.onChange(async (value) => {
+						this.plugin.settings.urlAutolinkEnabled = value;
+						await this.plugin.saveSettings();
+						this.renderLegacy();
+					});
+			});
+
+		if (this.plugin.settings.urlAutolinkEnabled) {
+			new Setting(containerEl)
+				.setName("URL top-level domains")
+				.setDesc(
+					"TLDs to detect for bare domains (one per line, without leading dot). " +
+					"Only affects bare domains — http(s):// URLs always link."
+				)
+				.setClass("linkosaurus-textarea-mono")
+				.addTextArea((text) => {
+					text.inputEl.rows = 6;
+					text.setPlaceholder("de\ncom\norg")
+						.setValue(this.plugin.settings.urlAutolinkTlds)
+						.onChange((value) => {
+							this.plugin.settings.urlAutolinkTlds = value;
+							this.plugin.debouncedSave();
+						});
+				});
 		}
 
 		new Setting(containerEl)
