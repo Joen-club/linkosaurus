@@ -5,6 +5,7 @@ import {
 	Setting,
 	Notice,
 	EditorSuggest,
+	Modal,
 	prepareFuzzySearch,
 	renderMatches,
 	setIcon,
@@ -176,6 +177,27 @@ interface FoldedKey {
 	ambiguous: boolean;
 }
 
+interface RelinkPlanItem {
+	file: TFile;
+	before: string;
+	after: string;
+	links: number;
+}
+
+interface RelinkPlan {
+	items: RelinkPlanItem[];
+	links: number;
+	skippedOpen: number;
+	skippedLarge: number;
+	aborted: boolean;
+}
+
+interface VaultRunRecord {
+	file: TFile;
+	original: string;
+	written: string;
+}
+
 interface PendingUndo {
 	from: number;
 	typedText: string;
@@ -293,6 +315,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// does not come back through the metadata cache as new work.
 	private propertyLinkWrites = new Set<string>();
 	private relinking = false;
+	// The notes the last "all notes" command changed, with their text from
+	// before and after, so it can be undone. Kept in memory only.
+	private lastVaultRun: VaultRunRecord[] | null = null;
 	// Notes the relink found nothing to do in, by modification time and the
 	// index generation they were checked against.
 	private relinkSkip = new Map<string, { mtime: number; generation: number }>();
@@ -452,7 +477,17 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			id: "relink-all-notes",
 			name: "Auto-link keywords in all notes",
 			callback: () => {
-				void this.relinkVault(true);
+				void this.runVaultCommand();
+			},
+		});
+
+		this.addCommand({
+			id: "undo-relink-all-notes",
+			name: "Undo last vault-wide link",
+			checkCallback: (checking: boolean) => {
+				if (!this.lastVaultRun) return false;
+				if (!checking) void this.undoVaultRun();
+				return true;
 			},
 		});
 
@@ -1174,7 +1209,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		text: string,
 		charBefore: string,
 		charAfter: string,
-		skipKeyword?: string
+		skipKeyword?: string,
+		// Counts the links created, for the vault-wide preview.
+		stats?: { links: number }
 	): string {
 		const result: string[] = [];
 		// i stays a raw index throughout; the fold map bridges to folded space
@@ -1280,6 +1317,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			) {
 				const urlMatch = this.matchUrlInText(text, i, "");
 				if (urlMatch) {
+					if (this.settings.urlAutolinkEnabled && stats) stats.links++;
 					result.push(
 						this.settings.urlAutolinkEnabled
 							? this.formatUrlAsMarkdownLink(urlMatch.url)
@@ -1301,6 +1339,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 			const aliasMatch = this.matchAliasInText(text, i, skipNorm);
 			if (aliasMatch) {
+				if (stats) stats.links++;
 				result.push(aliasMatch.replacement);
 				i = aliasMatch.end;
 				continue;
@@ -1338,6 +1377,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (atStartBoundary && this.settings.emailAutolinkEnabled) {
 				const email = matchEmailInText(text, i, prevChar);
 				if (email) {
+					if (stats) stats.links++;
 					result.push(formatEmailAsMarkdownLink(email.address));
 					i = email.end;
 					continue;
@@ -1347,6 +1387,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (atStartBoundary) {
 				const bareUrl = this.matchUrlInText(text, i, prevChar);
 				if (bareUrl) {
+					if (stats) stats.links++;
 					result.push(this.formatUrlAsMarkdownLink(bareUrl.url));
 					i = bareUrl.end;
 					continue;
@@ -1392,6 +1433,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 					const link = formatWikilink(entry.keyword, entry.target);
 					if (!link) continue;
+					if (stats) stats.links++;
 					result.push(link);
 					i = endPos;
 					matched = true;
@@ -1786,105 +1828,317 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// Writes the linked version of a note. vault.process (Obsidian 1.1) reads
 	// and writes in one step, so an edit landing between our read and our
 	// write is linked as well instead of being overwritten; older versions
-	// fall back to read + modify. Returns true when the file changed.
-	private async writeLinked(file: TFile): Promise<boolean> {
+	// fall back to read + modify. Returns what was there and what was
+	// written, or null when nothing changed.
+	private async writeLinked(
+		file: TFile,
+		expected?: { before: string; after: string }
+	): Promise<{ original: string; written: string } | null> {
 		const vault = this.app.vault as unknown as {
 			process?: (
 				file: TFile,
 				fn: (data: string) => string
 			) => Promise<string>;
 		};
-		const link = (data: string) =>
-			data.length > 100000
+		const link = (data: string) => {
+			// The preview already computed this exact text.
+			if (expected && data === expected.before) return expected.after;
+			return data.length > 100000
 				? data
 				: this.replaceKeywordsInText(data, "", "", file.basename);
+		};
+		let original = "";
+		let written = "";
 		if (typeof vault.process === "function") {
-			let changed = false;
 			await vault.process.call(this.app.vault, file, (data: string) => {
-				const next = link(data);
-				changed = next !== data;
-				return next;
+				original = data;
+				written = link(data);
+				return written;
 			});
-			return changed;
+		} else {
+			original = await this.app.vault.read(file);
+			written = link(original);
+			if (written !== original) await this.app.vault.modify(file, written);
 		}
-		const data = await this.app.vault.read(file);
-		const next = link(data);
-		if (next === data) return false;
-		await this.app.vault.modify(file, next);
-		return true;
+		return written === original ? null : { original, written };
 	}
 
-	private async relinkVault(showNotice: boolean) {
-		if (this.relinking || this.unloaded) return;
-		if (this.entries.length === 0) return;
-		this.relinking = true;
+	// Walks the vault and works out which notes the bulk linker would
+	// change, without writing anything. Gives the UI a frame every 50
+	// notes and stops when the plugin unloads.
+	private async planRelink(
+		progress?: (done: number, total: number) => void
+	): Promise<RelinkPlan> {
+		const files = this.app.vault.getMarkdownFiles();
+		const plan: RelinkPlan = {
+			items: [],
+			links: 0,
+			skippedOpen: 0,
+			skippedLarge: 0,
+			aborted: false,
+		};
+		let open = this.openFilePaths();
+		const activePath = this.app.workspace.getActiveFile()?.path;
+		let visited = 0;
 
-		try {
-			const files = this.app.vault.getMarkdownFiles();
-			let open = this.openFilePaths();
-			const activePath = this.app.workspace.getActiveFile()?.path;
-			let totalLinked = 0;
-			let visited = 0;
-
-			for (const file of files) {
-				if (this.unloaded) break;
-				// Give the UI a frame every 50 notes so a large vault does not
-				// freeze the editor while it is scanned.
-				if (++visited % 50 === 0) {
-					await new Promise<void>((r) => window.setTimeout(r, 0));
-					if (this.unloaded) break;
-					open = this.openFilePaths();
+		for (const file of files) {
+			if (this.unloaded) {
+				plan.aborted = true;
+				break;
+			}
+			if (++visited % 50 === 0) {
+				progress?.(visited, files.length);
+				await new Promise<void>((r) => window.setTimeout(r, 0));
+				if (this.unloaded) {
+					plan.aborted = true;
+					break;
 				}
-				if (open.has(file.path) || file.path === activePath) continue;
-				if (!this.isLinkableDestination(file)) continue;
+				open = this.openFilePaths();
+			}
+			if (!this.isLinkableDestination(file)) continue;
 
-				// Unchanged note, unchanged index: it produced nothing last
-				// time and will produce nothing now.
-				const generation = this.indexGeneration;
-				const seen = this.relinkSkip.get(file.path);
-				if (
-					seen &&
-					seen.mtime === file.stat.mtime &&
-					seen.generation === generation
-				)
-					continue;
+			// Unchanged note, unchanged index: it produced nothing last
+			// time and will produce nothing now.
+			const generation = this.indexGeneration;
+			const seen = this.relinkSkip.get(file.path);
+			if (
+				seen &&
+				seen.mtime === file.stat.mtime &&
+				seen.generation === generation
+			)
+				continue;
 
-				const content = await this.app.vault.cachedRead(file);
-				if (content.length > 100000) continue;
-				const replaced = this.replaceKeywordsInText(
-					content,
-					"",
-					"",
-					file.basename
-				);
-				if (replaced === content) {
-					this.relinkSkip.set(file.path, {
-						mtime: file.stat.mtime,
-						generation,
-					});
-					continue;
-				}
+			// Open notes are skipped to avoid cursor jumps.
+			if (open.has(file.path) || file.path === activePath) {
+				plan.skippedOpen++;
+				continue;
+			}
 
-				if (this.unloaded) break;
-				// The note may have been opened while we were reading.
-				if (this.openFilePaths().has(file.path)) continue;
-				if (await this.writeLinked(file)) totalLinked++;
+			const before = await this.app.vault.cachedRead(file);
+			if (before.length > 100000) {
+				plan.skippedLarge++;
+				continue;
+			}
+			const stats = { links: 0 };
+			const after = this.replaceKeywordsInText(
+				before,
+				"",
+				"",
+				file.basename,
+				stats
+			);
+			if (after === before) {
 				this.relinkSkip.set(file.path, {
 					mtime: file.stat.mtime,
 					generation,
 				});
+				continue;
 			}
+			plan.items.push({ file, before, after, links: stats.links });
+			plan.links += stats.links;
+		}
+		progress?.(files.length, files.length);
+		return plan;
+	}
 
+	// Writes a plan. Each note is re-checked for being open right before
+	// its write. Returns the changes, for undo.
+	private async applyRelink(
+		plan: RelinkPlan,
+		progress?: (done: number, total: number) => void
+	): Promise<VaultRunRecord[]> {
+		const records: VaultRunRecord[] = [];
+		let done = 0;
+		for (const item of plan.items) {
+			if (this.unloaded) break;
+			if (++done % 20 === 0) {
+				progress?.(done, plan.items.length);
+				await new Promise<void>((r) => window.setTimeout(r, 0));
+			}
+			// The note may have been opened in the meantime.
+			if (this.openFilePaths().has(item.file.path)) continue;
+			try {
+				const result = await this.writeLinked(item.file, item);
+				if (result) records.push({ file: item.file, ...result });
+			} catch (error) {
+				console.error(`Linkosaurus: could not link ${item.file.path}`, error);
+			}
+			this.relinkSkip.set(item.file.path, {
+				mtime: item.file.stat.mtime,
+				generation: this.indexGeneration,
+			});
+		}
+		return records;
+	}
+
+	// The periodic and event-driven relink: no preview, no undo record.
+	private async relinkVault(showNotice: boolean) {
+		if (this.relinking || this.unloaded) return;
+		if (this.entries.length === 0) return;
+		this.relinking = true;
+		try {
+			const plan = await this.planRelink();
+			const records = await this.applyRelink(plan);
 			if (showNotice && !this.unloaded) {
 				new Notice(
-					totalLinked > 0
-						? `Linkosaurus: Auto-linked keywords in ${totalLinked} note${totalLinked === 1 ? "" : "s"}.`
+					records.length > 0
+						? `Linkosaurus: Auto-linked keywords in ${records.length} note${records.length === 1 ? "" : "s"}.`
 						: "Linkosaurus: No keywords found to link."
 				);
 			}
 		} finally {
 			this.relinking = false;
 		}
+	}
+
+	// "Auto-link keywords in all notes": a dry run first, shown in a
+	// confirmation dialog, then the write with progress — and the original
+	// text kept so the run can be undone.
+	private async runVaultCommand() {
+		if (this.relinking) {
+			new Notice("Linkosaurus: linking all notes is already running.");
+			return;
+		}
+		if (!this.hasBulkWork()) {
+			new Notice(
+				"Linkosaurus: there are no keywords to link yet. Add some in the settings or turn on vault link detection."
+			);
+			return;
+		}
+		this.relinking = true;
+		let released = false;
+		const release = () => {
+			if (released) return;
+			released = true;
+			this.relinking = false;
+		};
+		try {
+			const checking = new Notice("Linkosaurus: checking notes…", 0);
+			let plan: RelinkPlan;
+			try {
+				plan = await this.planRelink((done, total) =>
+					checking.setMessage(`Linkosaurus: checking notes ${done}/${total}…`)
+				);
+			} finally {
+				checking.hide();
+			}
+			if (plan.aborted || this.unloaded) {
+				release();
+				return;
+			}
+			if (plan.items.length === 0) {
+				new Notice(
+					"Linkosaurus: no keywords found to link." +
+						VaultRunModal.skippedText(plan)
+				);
+				release();
+				return;
+			}
+			new VaultRunModal(this.app, plan, {
+				onConfirm: () => {
+					void this.confirmVaultRun(plan).finally(release);
+				},
+				onCancel: release,
+			}).open();
+		} catch (error) {
+			release();
+			throw error;
+		}
+	}
+
+	private async confirmVaultRun(plan: RelinkPlan) {
+		const total = plan.items.length;
+		const notice = new Notice(`Linkosaurus: linking 0/${total} notes…`, 0);
+		let records: VaultRunRecord[];
+		try {
+			records = await this.applyRelink(plan, (done) =>
+				notice.setMessage(`Linkosaurus: linking ${done}/${total} notes…`)
+			);
+		} finally {
+			notice.hide();
+		}
+		// The undo copy lives in memory; a run that rewrote a huge vault is
+		// not worth holding hundreds of megabytes for.
+		let kept = 0;
+		for (const r of records) kept += r.original.length + r.written.length;
+		const undoable = records.length > 0 && kept <= 25_000_000;
+		this.lastVaultRun = undoable ? records : null;
+		const skipped = total - records.length;
+		new Notice(
+			`Linkosaurus: linked ${records.length} note${records.length === 1 ? "" : "s"}.` +
+				(skipped > 0
+					? ` ${skipped} skipped because they were opened or changed meanwhile.`
+					: "") +
+				(undoable
+					? " Run “Undo last vault-wide link” to take it back."
+					: records.length > 0
+						? " The run was too large to keep an undo copy."
+						: "")
+		);
+	}
+
+	// Puts back every note of the last vault-wide run that has not been
+	// edited since. Notes changed afterwards are left alone — undoing those
+	// would throw away the newer edit.
+	private async undoVaultRun() {
+		const records = this.lastVaultRun;
+		if (!records) {
+			new Notice("Linkosaurus: there is no vault-wide run to undo.");
+			return;
+		}
+		if (this.relinking) {
+			new Notice("Linkosaurus: linking all notes is running; try again when it is done.");
+			return;
+		}
+		this.relinking = true;
+		let restored = 0;
+		let kept = 0;
+		try {
+			const vault = this.app.vault as unknown as {
+				process?: (
+					file: TFile,
+					fn: (data: string) => string
+				) => Promise<string>;
+			};
+			for (const rec of records) {
+				if (this.unloaded) break;
+				// The file may have been deleted or renamed away.
+				const live = this.app.vault.getAbstractFileByPath(rec.file.path);
+				if (live !== rec.file) {
+					kept++;
+					continue;
+				}
+				let didRestore = false;
+				try {
+					if (typeof vault.process === "function") {
+						await vault.process.call(this.app.vault, rec.file, (data: string) => {
+							if (data !== rec.written) return data;
+							didRestore = true;
+							return rec.original;
+						});
+					} else {
+						const data = await this.app.vault.read(rec.file);
+						if (data === rec.written) {
+							await this.app.vault.modify(rec.file, rec.original);
+							didRestore = true;
+						}
+					}
+				} catch (error) {
+					console.error(`Linkosaurus: could not restore ${rec.file.path}`, error);
+				}
+				if (didRestore) restored++;
+				else kept++;
+			}
+		} finally {
+			this.relinking = false;
+		}
+		this.lastVaultRun = null;
+		new Notice(
+			`Linkosaurus: restored ${restored} note${restored === 1 ? "" : "s"}.` +
+				(kept > 0
+					? ` ${kept} left as they are because they changed after linking.`
+					: "")
+		);
 	}
 
 	// Debounced by 2 s, but never postponed for more than 5 s in total, so
@@ -3489,6 +3743,89 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 
 	propertySuggestCtor = PropertyValueSuggest;
 	return propertySuggestCtor;
+}
+
+// The preview of "Auto-link keywords in all notes": how many notes and links,
+// the notes themselves on demand, and a button to go ahead.
+class VaultRunModal extends Modal {
+	private plan: RelinkPlan;
+	private handlers: { onConfirm: () => void; onCancel: () => void };
+	private decided = false;
+
+	constructor(
+		app: App,
+		plan: RelinkPlan,
+		handlers: { onConfirm: () => void; onCancel: () => void }
+	) {
+		super(app);
+		this.plan = plan;
+		this.handlers = handlers;
+	}
+
+	static skippedText(plan: RelinkPlan): string {
+		const parts: string[] = [];
+		if (plan.skippedOpen > 0)
+			parts.push(`${plan.skippedOpen} open note${plan.skippedOpen === 1 ? "" : "s"}`);
+		if (plan.skippedLarge > 0)
+			parts.push(
+				`${plan.skippedLarge} note${plan.skippedLarge === 1 ? "" : "s"} over 100k characters`
+			);
+		return parts.length > 0 ? ` Skipped: ${parts.join(", ")}.` : "";
+	}
+
+	onOpen(): void {
+		const { contentEl } = this;
+		const { items, links } = this.plan;
+		const notes = items.length;
+		this.titleEl.setText("Link keywords in all notes");
+		contentEl.createEl("p", {
+			text:
+				`${links} link${links === 1 ? "" : "s"} in ${notes} note${notes === 1 ? "" : "s"}.` +
+				VaultRunModal.skippedText(this.plan),
+		});
+
+		const details = contentEl.createEl("details", {
+			cls: "linkosaurus-details",
+		});
+		details.createEl("summary", {
+			cls: "linkosaurus-details-summary",
+			text: "Show notes",
+		});
+		const shown = items.slice(0, 500);
+		details.createDiv({
+			cls: "linkosaurus-details-list",
+			text:
+				shown.map((i) => `${i.file.path} (${i.links})`).join("\n") +
+				(items.length > shown.length
+					? `\n… and ${items.length - shown.length} more`
+					: ""),
+		});
+
+		contentEl.createEl("p", {
+			cls: "setting-item-description",
+			text: "Open notes are not touched. You can undo this run with the command “Undo last vault-wide link”.",
+		});
+
+		new Setting(contentEl)
+			.addButton((button) =>
+				button.setButtonText("Cancel").onClick(() => this.close())
+			)
+			.addButton((button) =>
+				button
+					.setButtonText(`Link ${notes} note${notes === 1 ? "" : "s"}`)
+					.setCta()
+					.onClick(() => {
+						this.decided = true;
+						this.close();
+						this.handlers.onConfirm();
+					})
+			);
+	}
+
+	onClose(): void {
+		this.contentEl.empty();
+		if (!this.decided) this.handlers.onCancel();
+	}
 }
 
 class AliasTargetSuggest extends EditorSuggest<AliasSuggestion> {
