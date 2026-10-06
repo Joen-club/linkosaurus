@@ -55,6 +55,12 @@ import {
 import { hashStrings, isPluginOwnedNote } from "./destination";
 import { clampRelinkInterval } from "./settings";
 import {
+	formatAliasLink,
+	formatWikilink,
+	sanitizeDisplay,
+	sanitizeTarget,
+} from "./wikilink";
+import {
 	endsInHashtag,
 	frontmatterCloseLine,
 	frontmatterEnd,
@@ -195,10 +201,6 @@ interface DeferredBulk extends DeferredBase {
 
 type DeferredAutolink = DeferredTrigger | DeferredBulk;
 
-function sanitize(text: string): string {
-	return text.replace(/\]\]|\[\[|[|#^\\/\n\r\0]/g, "");
-}
-
 export default class AutoLinkKeywordsPlugin extends Plugin {
 	settings: AutoLinkSettings = { ...DEFAULT_SETTINGS };
 	private entries: IndexedEntry[] = [];
@@ -333,8 +335,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				const before = lineText.substring(0, cursor.ch);
 				if (this.isInsideWikilink(before)) return;
 
-				const safe = sanitize(text);
-				editor.replaceSelection(`[[${safe}]]`);
+				const link = formatWikilink(text, text);
+				if (!link) return;
+				editor.replaceSelection(link);
 
 				if (!this.manualLookup.has(this.normalize(text))) {
 					const list = this.settings.keywordList.replace(/\s+$/, "");
@@ -807,9 +810,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (file && this.normalize(alias.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + alias.start;
-			const t = sanitize(alias.target);
-			const d = sanitize(alias.displayText);
-			const insert = `[[${t}|${d}]]${trailing}`;
+			const link = formatAliasLink(alias.target, alias.displayText);
+			if (!link) return false;
+			const insert = link + trailing;
 			this.dispatchAutolink(
 				view,
 				absStart,
@@ -826,12 +829,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (file && this.normalize(direct.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + direct.start;
-			const kw = sanitize(direct.keyword);
-			const tg = sanitize(direct.target);
-			const insert =
-				kw.toLowerCase() === tg.toLowerCase()
-					? `[[${kw}]]${trailing}`
-					: `[[${tg}|${kw}]]${trailing}`;
+			const link = formatWikilink(direct.keyword, direct.target);
+			if (!link) return false;
+			const insert = link + trailing;
 			this.dispatchAutolink(
 				view,
 				absStart,
@@ -1190,13 +1190,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					)
 						continue;
 
-					const kw = sanitize(entry.keyword);
-					const tg = sanitize(entry.target);
-					if (kw.toLowerCase() === tg.toLowerCase()) {
-						result.push(`[[${kw}]]`);
-					} else {
-						result.push(`[[${tg}|${kw}]]`);
-					}
+					const link = formatWikilink(entry.keyword, entry.target);
+					if (!link) continue;
+					result.push(link);
 					i = endPos;
 					matched = true;
 					break;
@@ -2412,21 +2408,11 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		entry: KeywordEntry,
 		displayText: string | null
 	) {
-		const t = sanitize(entry.target);
-		if (!t) return;
-		let insert: string;
-		if (displayText === null) {
-			const kw = sanitize(entry.keyword);
-			if (!kw) return;
-			insert =
-				kw.toLowerCase() === t.toLowerCase()
-					? `[[${t}]]`
-					: `[[${t}|${kw}]]`;
-		} else {
-			const d = sanitize(displayText);
-			if (!d) return;
-			insert = `[[${t}|${d}]]`;
-		}
+		const insert =
+			displayText === null
+				? formatWikilink(entry.keyword, entry.target)
+				: formatAliasLink(entry.target, displayText);
+		if (!insert) return;
 
 		const editor = context.editor;
 		const view = (editor as unknown as { cm?: EditorView }).cm;
@@ -2493,9 +2479,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (target === undefined) return null;
 		if (skipNorm && this.normalize(target) === skipNorm) return null;
 
-		const t = sanitize(target);
-		const d = sanitize(displayText);
-		return { replacement: `[[${t}|${d}]]`, end: targetEnd };
+		const replacement = formatAliasLink(target, displayText);
+		if (!replacement) return null;
+		return { replacement, end: targetEnd };
 	}
 
 	private matchMultiWordAliasInText(
@@ -2526,9 +2512,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (target === undefined) return null;
 		if (skipNorm && this.normalize(target) === skipNorm) return null;
 
-		const t = sanitize(target);
-		const d = sanitize(displayText);
-		return { replacement: `[[${t}|${d}]]`, end: targetEnd };
+		const replacement = formatAliasLink(target, displayText);
+		if (!replacement) return null;
+		return { replacement, end: targetEnd };
 	}
 
 	private matchKeyword(
@@ -3042,8 +3028,8 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 
 	selectSuggestion(suggestion: AliasSuggestion): void {
 		const value = propertyLinkFromEntry(
-			sanitize(suggestion.entry.keyword),
-			sanitize(suggestion.entry.target),
+			sanitizeDisplay(suggestion.entry.keyword),
+			sanitizeTarget(suggestion.entry.target),
 			(text) => this.plugin.foldKey(text)
 		);
 
