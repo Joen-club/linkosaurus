@@ -59,7 +59,11 @@ import {
 	parseFolderList,
 	passesFolderFilter,
 } from "./destination";
-import { clampRelinkInterval } from "./settings";
+import {
+	affectsIndex,
+	changedSettingKeys,
+	clampRelinkInterval,
+} from "./settings";
 import {
 	formatAliasLink,
 	formatWikilink,
@@ -277,6 +281,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// changes: keywords, targets, matching options, URL/email/alias rules.
 	private indexGeneration = 0;
 	private indexSignature = "";
+	// The settings the derived state was last built from.
+	private appliedSettings: Record<string, unknown> | null = null;
 	// Set in onunload: async work still in flight (vault relink, layout-ready
 	// callback) checks it and stops instead of touching a dead plugin.
 	unloaded = false;
@@ -3061,10 +3067,12 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 	debouncedSave() {
 		if (this.saveTimer !== null) window.clearTimeout(this.saveTimer);
+		// Text fields only store their value; parsing and saving happen
+		// together once typing pauses.
 		this.saveTimer = window.setTimeout(() => {
-			void this.saveSettings();
 			this.saveTimer = null;
-		}, 500);
+			void this.saveSettings();
+		}, 300);
 	}
 
 	async loadSettings() {
@@ -3140,19 +3148,40 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			this.settings.periodicRelinkIntervalMinutes
 		);
 		this.rebuildFoldTable();
+		// onload parses everything right after this; that is the baseline
+		// later saves are compared with.
+		this.appliedSettings = { ...this.settings } as unknown as Record<
+			string,
+			unknown
+		>;
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
-		// Order matters: the blocklist and the keyword index are both folded
-		// with the current table, so the table has to be rebuilt first.
-		this.rebuildFoldTable();
-		this.parseBlocklist();
-		this.parseManualKeywords();
-		this.parseTlds();
-		if (this.settings.scanVaultLinks) {
-			this.scheduleScan();
+		this.applySettings();
+	}
+
+	// Brings the derived state (fold table, keyword index, TLDs) in line
+	// with the settings — but only the parts a changed setting touches.
+	// Toggling a popup option no longer rebuilds the index and rescans the
+	// vault.
+	private applySettings() {
+		const current = { ...this.settings } as unknown as Record<string, unknown>;
+		const changed = changedSettingKeys(this.appliedSettings, current);
+		this.appliedSettings = current;
+		if (changed.size === 0) return;
+
+		if (affectsIndex(changed)) {
+			// Order matters: the blocklist and the keyword index are both
+			// folded with the current table, so the table comes first.
+			this.rebuildFoldTable();
+			this.parseBlocklist();
+			this.parseManualKeywords();
+			if (this.settings.scanVaultLinks) this.scheduleScan();
 		}
+		if (changed.has("urlAutolinkTlds")) this.parseTlds();
+		// URL/email/alias options change what the bulk linker writes.
+		this.bumpIndexGeneration();
 	}
 }
 
@@ -3558,7 +3587,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						value: () => plugin.settings.keywordList,
 						onChange: (value) => {
 							plugin.settings.keywordList = value;
-							plugin.parseManualKeywords();
 							plugin.debouncedSave();
 						},
 					}),
@@ -3802,8 +3830,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						value: () => plugin.settings.blocklist,
 						onChange: (value) => {
 							plugin.settings.blocklist = value;
-							plugin.parseBlocklist();
-							plugin.parseManualKeywords();
 							plugin.debouncedSave();
 						},
 					}),
@@ -3907,7 +3933,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						value: () => plugin.settings.urlAutolinkTlds,
 						onChange: (value) => {
 							plugin.settings.urlAutolinkTlds = value;
-							plugin.parseTlds();
 							plugin.debouncedSave();
 						},
 					}),
@@ -4171,7 +4196,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 			text.setValue(this.plugin.settings.keywordList).onChange(
 				(value) => {
 					this.plugin.settings.keywordList = value;
-					this.plugin.parseManualKeywords();
 					this.plugin.debouncedSave();
 				}
 			);
@@ -4421,8 +4445,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 						.setValue(this.plugin.settings.blocklist)
 						.onChange((value) => {
 							this.plugin.settings.blocklist = value;
-							this.plugin.parseBlocklist();
-							this.plugin.parseManualKeywords();
 							this.plugin.debouncedSave();
 						});
 				});
@@ -4539,7 +4561,6 @@ class AutoLinkSettingTab extends PluginSettingTab {
 							.setValue(this.plugin.settings.urlAutolinkTlds)
 							.onChange((value) => {
 								this.plugin.settings.urlAutolinkTlds = value;
-								this.plugin.parseTlds();
 								this.plugin.debouncedSave();
 							});
 					});

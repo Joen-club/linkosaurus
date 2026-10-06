@@ -17,3 +17,44 @@ export function clampRelinkInterval(value: unknown): number {
 		Math.max(RELINK_INTERVAL_MIN, Math.round(n))
 	);
 }
+
+/**
+ * Settings that decide which keywords exist and how they match. Changing one
+ * of them means re-folding, re-parsing and re-scanning; any other setting is
+ * picked up where it is read and needs none of that.
+ */
+export const INDEX_SETTING_KEYS: readonly string[] = [
+	"keywordList",
+	"blocklist",
+	"caseInsensitive",
+	"foldDiacritics",
+	"foldLanguageMode",
+	"foldLanguages",
+	"minKeywordLength",
+	"scanVaultLinks",
+	"scanFrontmatterAliases",
+	"folderFilter",
+	"folderFilterMode",
+];
+
+/** The keys whose values differ between two settings objects. */
+export function changedSettingKeys(
+	previous: Record<string, unknown> | null,
+	next: Record<string, unknown>
+): Set<string> {
+	const keys = new Set<string>();
+	for (const key of Object.keys(next)) {
+		if (!previous || previous[key] !== next[key]) keys.add(key);
+	}
+	if (previous) {
+		for (const key of Object.keys(previous)) {
+			if (!(key in next)) keys.add(key);
+		}
+	}
+	return keys;
+}
+
+/** True when any of the changed keys affects the keyword index. */
+export function affectsIndex(changed: Set<string>): boolean {
+	return INDEX_SETTING_KEYS.some((key) => changed.has(key));
+}
