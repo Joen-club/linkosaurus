@@ -218,6 +218,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// Prefilters: a keyword can only match if its folded form ends (matcher A)
 	// or starts (matcher B) with the same character as the text at that point.
 	private byKey = new Map<string, FoldedKey[]>();
+	// normalize(keyword) → entry; unique by construction (seenExact).
+	private byExact = new Map<string, IndexedEntry>();
 	// Every distinct folded key length, longest first.
 	private keyLengths: number[] = [];
 	// "open" when some keyword is "open …"; "open s" when one is "open s…".
@@ -2140,6 +2142,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// over vault entries with the same spelling.
 	private buildBuckets() {
 		this.byKey = new Map();
+		this.byExact = new Map();
+		for (const entry of this.entries) this.byExact.set(entry.exact, entry);
 		const lengths = new Set<number>();
 		const growPrefixes = new Set<string>();
 		const growNext = new Set<string>();
@@ -2899,8 +2903,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				// exact one, the same rule the typing path follows so
 				// "Zurich" never links [[Zürich]] when both exist.
 				if (this.ambiguousKeys.has(key)) {
-					const exact = this.normalize(value);
-					return this.entries.find((e) => e.exact === exact)?.target;
+					return this.byExact.get(this.normalize(value))?.target;
 				}
 				return target;
 			},
@@ -2910,8 +2913,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				const seen = new Set<string>();
 				const out: string[] = [];
 				for (const entry of this.entries) {
-					if (!this.foldKey(entry.keyword).startsWith(key)) continue;
-					const targetKey = this.normalize(entry.target);
+					// folded[0] is foldKey(keyword), computed with the index.
+					if (!entry.folded[0]!.startsWith(key)) continue;
+					const targetKey = entry.targetNorm;
 					if (seen.has(targetKey)) continue;
 					seen.add(targetKey);
 					out.push(entry.target);
