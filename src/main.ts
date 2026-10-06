@@ -656,6 +656,10 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			return this.tryAutolinkBeforeCursor(view, from, " ", true);
 		}
 
+		// A line break arriving as text input (not as the Enter key, which
+		// handleEnterKey covers) is a plain "\n" either way — no list
+		// continuation is lost by inserting it ourselves, and the default
+		// input would land at a position our link just shifted.
 		if (text === "\n") {
 			return this.tryAutolinkBeforeCursor(view, from, "\n", false);
 		}
@@ -694,7 +698,11 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			return false;
 		}
 
-		return this.tryAutolinkBeforeCursor(view, sel.head, "\n", false);
+		// Link only the word and leave the line break to Obsidian: its Enter
+		// command is what continues lists, checkboxes and quotes and keeps
+		// the indentation. Inserting "\n" here would bypass all of that.
+		this.tryAutolinkBeforeCursor(view, sel.head, "", false);
+		return false;
 	}
 
 	private dispatchAutolink(
