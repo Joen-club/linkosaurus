@@ -2456,21 +2456,55 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return null;
 	}
 
+	// Entries in alphabetical order, built once per index generation for the
+	// empty-query popup.
+	private sortedEntries: IndexedEntry[] | null = null;
+	private sortedGeneration = -1;
+	// What the previous query matched, so typing one more character only
+	// re-checks those instead of every keyword.
+	private lastSuggest: {
+		query: string;
+		foldedQuery: string;
+		self: string | null;
+		generation: number;
+		matched: IndexedEntry[];
+	} | null = null;
+
+	private alphabeticalEntries(): IndexedEntry[] {
+		if (
+			this.sortedEntries === null ||
+			this.sortedGeneration !== this.indexGeneration
+		) {
+			const collator = new Intl.Collator(undefined, {
+				sensitivity: "base",
+				numeric: true,
+			});
+			this.sortedEntries = [...this.entries].sort((a, b) =>
+				collator.compare(a.keyword, b.keyword)
+			);
+			this.sortedGeneration = this.indexGeneration;
+		}
+		return this.sortedEntries;
+	}
+
 	getAliasSuggestions(
 		query: string,
-		activeFile: TFile | null
+		activeFile: TFile | null,
+		limit = Number.POSITIVE_INFINITY
 	): AliasSuggestion[] {
 		const selfNorm = activeFile
 			? this.normalize(activeFile.basename)
 			: null;
-		const candidates = this.entries.filter(
-			(e) => selfNorm === null || this.normalize(e.target) !== selfNorm
-		);
+		const notSelf = (e: IndexedEntry) =>
+			selfNorm === null || e.targetNorm !== selfNorm;
 
 		if (!query) {
-			return candidates
-				.sort((a, b) => a.keyword.localeCompare(b.keyword))
-				.map((entry) => ({ entry, match: null }));
+			const out: AliasSuggestion[] = [];
+			for (const entry of this.alphabeticalEntries()) {
+				if (out.length >= limit) break;
+				if (notSelf(entry)) out.push({ entry, match: null });
+			}
+			return out;
 		}
 
 		const fuzzy = prepareFuzzySearch(query);
@@ -2480,16 +2514,44 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				? prepareFuzzySearch(foldedQuery)
 				: null;
 
-		const scored: {
+		// A longer query only ever matches a subset of what the shorter one
+		// matched, so narrowing from the previous result is exact.
+		const last = this.lastSuggest;
+		const pool =
+			last &&
+			last.generation === this.indexGeneration &&
+			last.self === selfNorm &&
+			query.startsWith(last.query) &&
+			foldedQuery.startsWith(last.foldedQuery)
+				? last.matched
+				: this.entries;
+
+		type Scored = {
 			entry: IndexedEntry;
 			match: SearchResult | null;
 			score: number;
-		}[] = [];
+		};
+		// The best `limit` results, kept sorted by score; ties keep index
+		// order, like the stable full sort this replaces.
+		const top: Scored[] = [];
+		const matched: IndexedEntry[] = [];
+		const offer = (item: Scored) => {
+			if (top.length >= limit) {
+				const worst = top[top.length - 1]!;
+				if (item.score <= worst.score) return;
+			}
+			let i = top.length;
+			while (i > 0 && top[i - 1]!.score < item.score) i--;
+			top.splice(i, 0, item);
+			if (top.length > limit) top.pop();
+		};
 
-		for (const entry of candidates) {
+		for (const entry of pool) {
+			if (!notSelf(entry)) continue;
 			const match = fuzzy(entry.keyword);
 			if (match) {
-				scored.push({ entry, match, score: match.score });
+				matched.push(entry);
+				offer({ entry, match, score: match.score });
 				continue;
 			}
 			// Second pass for keywords that folding actually changes, so
@@ -2497,7 +2559,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (!fuzzyFolded || entry.folded[0] === entry.exact) continue;
 			const foldedMatch = fuzzyFolded(entry.folded[0]!);
 			if (!foldedMatch) continue;
-			scored.push({
+			matched.push(entry);
+			offer({
 				entry,
 				// The highlight offsets point into the folded string; they are
 				// only valid positions in the raw keyword when the fold kept
@@ -2507,8 +2570,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			});
 		}
 
-		scored.sort((a, b) => b.score - a.score);
-		return scored.map(({ entry, match }) => ({ entry, match }));
+		this.lastSuggest = {
+			query,
+			foldedQuery,
+			self: selfNorm,
+			generation: this.indexGeneration,
+			matched,
+		};
+		return top.map(({ entry, match }) => ({ entry, match }));
 	}
 
 	// displayText null means note-search mode: the typed query was only a
@@ -3154,7 +3223,8 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 
 		const suggestions = this.plugin.getAliasSuggestions(
 			trigger.query,
-			this.plugin.app.workspace.getActiveFile()
+			this.plugin.app.workspace.getActiveFile(),
+			this.limit
 		);
 		console.debug(
 			`Linkosaurus: property search "${trigger.query}" → ${suggestions.length} match(es)`
@@ -3294,7 +3364,8 @@ class AliasTargetSuggest extends EditorSuggest<AliasSuggestion> {
 	getSuggestions(context: EditorSuggestContext): AliasSuggestion[] {
 		return this.plugin.getAliasSuggestions(
 			context.query,
-			context.file ?? null
+			context.file ?? null,
+			this.limit
 		);
 	}
 

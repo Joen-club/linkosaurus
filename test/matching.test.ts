@@ -133,3 +133,28 @@ test("grow sets answer whether a match can still become a longer keyword", () =>
 	assert.equal(p.growPrefixes.has("soren"), true);
 	assert.equal(p.growPrefixes.has("source"), false);
 });
+
+test("search popup: empty query lists alphabetically up to the limit", () => {
+	const p = plugin("banana\nApple\ncherry\nalpha") as unknown as {
+		getAliasSuggestions(q: string, f: null, limit?: number): { entry: { keyword: string } }[];
+	};
+	assert.deepEqual(
+		p.getAliasSuggestions("", null, 3).map((s) => s.entry.keyword),
+		["alpha", "Apple", "banana"]
+	);
+});
+
+test("search popup: narrowing a query gives the same result as a fresh search", () => {
+	const words = Array.from({ length: 200 }, (_, i) => `note${i} topic${i % 7}`);
+	const make = () =>
+		plugin(words.join("\n")) as unknown as {
+			getAliasSuggestions(q: string, f: null, limit?: number): { entry: { keyword: string } }[];
+		};
+	const narrowed = make();
+	narrowed.getAliasSuggestions("note1", null, 12);
+	const a = narrowed.getAliasSuggestions("note12", null, 12).map((s) => s.entry.keyword);
+	const b = make().getAliasSuggestions("note12", null, 12).map((s) => s.entry.keyword);
+	assert.deepEqual(a, b);
+	assert.ok(a.length > 0 && a.length <= 12);
+	assert.ok(a.every((k) => k.includes("note12")));
+});
