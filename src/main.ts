@@ -52,6 +52,7 @@ import {
 	propertyLinkFromEntry,
 	type PropertyMatcher,
 } from "./properties";
+import { hashStrings, isPluginOwnedNote } from "./destination";
 
 interface AutoLinkSettings {
 	keywordList: string;
@@ -233,6 +234,13 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// does not come back through the metadata cache as new work.
 	private propertyLinkWrites = new Set<string>();
 	private relinking = false;
+	// Notes the relink found nothing to do in, by modification time and the
+	// index generation they were checked against.
+	private relinkSkip = new Map<string, { mtime: number; generation: number }>();
+	// Changes whenever anything that decides the bulk linker's output
+	// changes: keywords, targets, matching options, URL/email/alias rules.
+	private indexGeneration = 0;
+	private indexSignature = "";
 	// Set in onunload: async work still in flight (vault relink, layout-ready
 	// callback) checks it and stops instead of touching a dead plugin.
 	unloaded = false;
@@ -1477,39 +1485,127 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}, 5000);
 	}
 
+	// Paths of every note currently shown in a pane. Asked fresh for each
+	// write, since a note may be opened while the relink is running.
+	private openFilePaths(): Set<string> {
+		const open = new Set<string>();
+		this.app.workspace.iterateAllLeaves((leaf) => {
+			const viewState = leaf.view?.getState();
+			if (viewState?.file) open.add(viewState.file as string);
+		});
+		return open;
+	}
+
+	// Whether the bulk linkers may write into this note at all.
+	isLinkableDestination(file: TFile): boolean {
+		if (file.extension !== "md") return false;
+		const folderPaths = this.parseFolderFilter();
+		if (folderPaths.length > 0) {
+			const inFolder = folderPaths.some((fp) => file.path.startsWith(fp));
+			const mode = this.settings.folderFilterMode;
+			if (mode === "include" && !inFolder) return false;
+			if (mode === "exclude" && inFolder) return false;
+		}
+		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as
+			| Record<string, unknown>
+			| undefined;
+		if (isPluginOwnedNote(file.path, fm)) return false;
+		return true;
+	}
+
+	// Writes the linked version of a note. vault.process (Obsidian 1.1) reads
+	// and writes in one step, so an edit landing between our read and our
+	// write is linked as well instead of being overwritten; older versions
+	// fall back to read + modify. Returns true when the file changed.
+	private async writeLinked(file: TFile): Promise<boolean> {
+		const vault = this.app.vault as unknown as {
+			process?: (
+				file: TFile,
+				fn: (data: string) => string
+			) => Promise<string>;
+		};
+		const link = (data: string) =>
+			data.length > 100000
+				? data
+				: this.replaceKeywordsInText(data, "", "", file.basename);
+		if (typeof vault.process === "function") {
+			let changed = false;
+			await vault.process.call(this.app.vault, file, (data: string) => {
+				const next = link(data);
+				changed = next !== data;
+				return next;
+			});
+			return changed;
+		}
+		const data = await this.app.vault.read(file);
+		const next = link(data);
+		if (next === data) return false;
+		await this.app.vault.modify(file, next);
+		return true;
+	}
+
 	private async relinkVault(showNotice: boolean) {
 		if (this.relinking || this.unloaded) return;
 		if (this.entries.length === 0) return;
 		this.relinking = true;
 
 		try {
-			const activeFile = this.app.workspace.getActiveFile();
-			const openFiles = new Set<string>();
-			this.app.workspace.iterateAllLeaves((leaf) => {
-				const viewState = leaf.view?.getState();
-				if (viewState?.file) openFiles.add(viewState.file as string);
-			});
-
 			const files = this.app.vault.getMarkdownFiles();
+			let open = this.openFilePaths();
+			const activePath = this.app.workspace.getActiveFile()?.path;
 			let totalLinked = 0;
+			let visited = 0;
 
 			for (const file of files) {
 				if (this.unloaded) break;
-				if (openFiles.has(file.path)) continue;
-				if (activeFile && file.path === activeFile.path) continue;
+				// Give the UI a frame every 50 notes so a large vault does not
+				// freeze the editor while it is scanned.
+				if (++visited % 50 === 0) {
+					await new Promise<void>((r) => window.setTimeout(r, 0));
+					if (this.unloaded) break;
+					open = this.openFilePaths();
+				}
+				if (open.has(file.path) || file.path === activePath) continue;
+				if (!this.isLinkableDestination(file)) continue;
 
-				const content = await this.app.vault.read(file);
+				// Unchanged note, unchanged index: it produced nothing last
+				// time and will produce nothing now.
+				const generation = this.indexGeneration;
+				const seen = this.relinkSkip.get(file.path);
+				if (
+					seen &&
+					seen.mtime === file.stat.mtime &&
+					seen.generation === generation
+				)
+					continue;
+
+				const content = await this.app.vault.cachedRead(file);
 				if (content.length > 100000) continue;
-
-				const replaced = this.replaceKeywordsInText(content, "", "", file.basename);
-				if (replaced === content) continue;
+				const replaced = this.replaceKeywordsInText(
+					content,
+					"",
+					"",
+					file.basename
+				);
+				if (replaced === content) {
+					this.relinkSkip.set(file.path, {
+						mtime: file.stat.mtime,
+						generation,
+					});
+					continue;
+				}
 
 				if (this.unloaded) break;
-				await this.app.vault.modify(file, replaced);
-				totalLinked++;
+				// The note may have been opened while we were reading.
+				if (this.openFilePaths().has(file.path)) continue;
+				if (await this.writeLinked(file)) totalLinked++;
+				this.relinkSkip.set(file.path, {
+					mtime: file.stat.mtime,
+					generation,
+				});
 			}
 
-			if (showNotice) {
+			if (showNotice && !this.unloaded) {
 				new Notice(
 					totalLinked > 0
 						? `Linkosaurus: Auto-linked keywords in ${totalLinked} note${totalLinked === 1 ? "" : "s"}.`
@@ -1869,6 +1965,27 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		this.entries.sort((a, b) => b.keyword.length - a.keyword.length);
 		this.buildBuckets();
+		this.bumpIndexGeneration();
+	}
+
+	private bumpIndexGeneration() {
+		const s = this.settings;
+		const parts: string[] = [
+			String(s.caseInsensitive),
+			String(s.foldDiacritics),
+			s.foldLanguageMode,
+			s.foldLanguages,
+			String(s.urlAutolinkEnabled),
+			String(s.emailAutolinkEnabled),
+			s.urlAutolinkTlds,
+			s.singleWordDelimiter,
+			s.multiWordDelimiter,
+		];
+		for (const e of this.entries) parts.push(e.exact, e.target);
+		const signature = hashStrings(parts) + ":" + this.entries.length;
+		if (signature === this.indexSignature) return;
+		this.indexSignature = signature;
+		this.indexGeneration++;
 	}
 
 	// Longest-match-wins lives here now: buckets are ordered by folded key
