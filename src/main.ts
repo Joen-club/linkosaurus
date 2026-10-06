@@ -54,6 +54,16 @@ import {
 } from "./properties";
 import { hashStrings, isPluginOwnedNote } from "./destination";
 import { clampRelinkInterval } from "./settings";
+import {
+	endsInHashtag,
+	frontmatterCloseLine,
+	frontmatterEnd,
+	skipCalloutType,
+	skipComment,
+	skipDisplayMath,
+	skipHashtag,
+	skipInlineMath,
+} from "./skip";
 
 interface AutoLinkSettings {
 	keywordList: string;
@@ -972,16 +982,19 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			: undefined;
 		let i = 0;
 
-		if (text.startsWith("---\n") || text.startsWith("---\r\n")) {
-			const searchFrom = text.indexOf("\n") + 1;
-			const fmCloseRegex = /\n---[ \t]*(?:\n|$)/;
-			const match = fmCloseRegex.exec(text.substring(searchFrom));
-			if (match) {
-				const fmEnd = searchFrom + match.index + match[0].length;
-				result.push(text.substring(0, fmEnd));
-				i = fmEnd;
-			}
+		const fmEnd = frontmatterEnd(text);
+		if (fmEnd > 0) {
+			result.push(text.substring(0, fmEnd));
+			i = fmEnd;
 		}
+
+		// Regions that are not prose: pushed through untouched.
+		const skipRegion = (end: number): boolean => {
+			if (end <= i) return false;
+			result.push(text.substring(i, end));
+			i = end;
+			return true;
+		};
 
 		while (i < text.length) {
 			const sub3 = text.substring(i, i + 3);
@@ -1041,6 +1054,21 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				}
 				continue;
 			}
+
+			const ch = text.charAt(i);
+			if (ch === "%" && skipRegion(skipComment(text, i))) continue;
+			if (ch === "$") {
+				if (skipRegion(skipDisplayMath(text, i))) continue;
+				if (skipRegion(skipInlineMath(text, i))) continue;
+			}
+			if (ch === "[" && skipRegion(skipCalloutType(text, i))) continue;
+			if (
+				ch === "#" &&
+				skipRegion(
+					skipHashtag(text, i, i === 0 ? charBefore : text.charAt(i - 1))
+				)
+			)
+				continue;
 
 			// Read from the raw text: this only tests for the ASCII scheme
 			// prefix, and folded offsets do not line up with i.
@@ -2045,10 +2073,22 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const tree = syntaxTree(view.state);
 		let node = tree.resolve(pos, -1);
 		while (node) {
-			if (/code/i.test(node.name)) return true;
+			// Code, math, #tags, %%comments%%, frontmatter and HTML are not
+			// prose; a link inserted there breaks them.
+			if (/code|math|hashtag|comment|frontmatter|html/i.test(node.name))
+				return true;
 			if (!node.parent || node.parent === node) break;
 			node = node.parent;
 		}
+
+		// The syntax tree may not have parsed that far yet, so the
+		// frontmatter block is also checked by position.
+		const doc = view.state.doc;
+		const fmClose = frontmatterCloseLine(
+			(n) => doc.line(n).text,
+			doc.lines
+		);
+		if (fmClose !== -1 && pos <= doc.line(fmClose).to) return true;
 
 		const before = lineText.substring(0, col);
 		let backticks = 0;
@@ -2532,6 +2572,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				const ch = textBefore.charAt(start - 1);
 				if (/[\p{L}\p{N}]/u.test(ch)) continue;
 			}
+			// "#Berlin" is a tag, not a mention of the note Berlin.
+			if (endsInHashtag(textBefore.substring(0, start))) continue;
 
 			if (textBefore.substring(start, start + 2) === "[[") continue;
 			if (
