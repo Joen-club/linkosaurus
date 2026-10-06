@@ -2808,12 +2808,6 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			target as HTMLInputElement | HTMLDivElement
 		);
 		this.propertySuggests.add({ field: target, suggest });
-		const key = target
-			.closest(".metadata-property")
-			?.getAttribute("data-property-key");
-		console.debug(
-			`Linkosaurus: suggestions attached to property ${key ?? "(unknown)"}`
-		);
 	}
 
 	// Property fields are not part of the editor, so there is no keystroke to
@@ -3259,9 +3253,6 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 			this.plugin.app.workspace.getActiveFile(),
 			this.limit
 		);
-		console.debug(
-			`Linkosaurus: property search "${trigger.query}" → ${suggestions.length} match(es)`
-		);
 		return suggestions.slice(0, this.limit);
 	}
 
@@ -3312,7 +3303,6 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 				})
 			);
 		}
-		console.debug(`Linkosaurus: property value set to ${value}`);
 		this.close();
 	}
 	}
