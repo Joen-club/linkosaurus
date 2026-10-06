@@ -151,6 +151,8 @@ interface KeywordEntry {
 interface IndexedEntry extends KeywordEntry {
 	folded: string[];
 	exact: string;
+	// normalize(target), precomputed for the self-link check.
+	targetNorm: string;
 	// True when the canonical fold preserves length, so fuzzy-match offsets
 	// found on it are also valid positions in the raw keyword.
 	foldedIdentity: boolean;
@@ -215,8 +217,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	private lookupMap = new Map<string, string>();
 	// Prefilters: a keyword can only match if its folded form ends (matcher A)
 	// or starts (matcher B) with the same character as the text at that point.
-	private byLastChar = new Map<string, FoldedKey[]>();
-	private byFirstChar = new Map<string, FoldedKey[]>();
+	private byKey = new Map<string, FoldedKey[]>();
+	// Every distinct folded key length, longest first.
+	private keyLengths: number[] = [];
 	private ambiguousKeys = new Set<string>();
 	private foldTable: FoldTable = buildFoldTable({
 		enabled: false,
@@ -1211,19 +1214,18 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				// to is a fold boundary by construction — only the end of a
 				// candidate match needs checking.
 				const foldedStart = toFoldedIndex(folded, i);
-				const bucket = this.byFirstChar.get(
-					foldedText.charAt(foldedStart)
-				);
-				for (const { entry, key, ambiguous } of bucket ?? []) {
-					if (skipNorm && this.normalize(entry.target) === skipNorm) continue;
-					const foldedEnd = foldedStart + key.length;
+				// Longest first: one map lookup per distinct key length
+				// instead of comparing every keyword with this first letter.
+				search: for (const len of this.keyLengths) {
+					const foldedEnd = foldedStart + len;
 					if (foldedEnd > foldedText.length) continue;
-
-					if (
-						foldedText.substring(foldedStart, foldedEnd) !== key
-					)
-						continue;
+					const candidates = this.byKey.get(
+						foldedText.substring(foldedStart, foldedEnd)
+					);
+					if (!candidates) continue;
 					if (!isFoldBoundary(folded, foldedEnd)) continue;
+					for (const { entry, ambiguous } of candidates) {
+					if (skipNorm && entry.targetNorm === skipNorm) continue;
 
 					const endPos = toSrcIndex(folded, foldedEnd);
 					if (
@@ -1248,7 +1250,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					result.push(link);
 					i = endPos;
 					matched = true;
-					break;
+					break search;
+					}
 				}
 				if (matched) continue;
 			}
@@ -2072,6 +2075,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				...entry,
 				folded,
 				exact,
+				targetNorm: this.normalize(entry.target),
 				// Compared against the raw keyword, not its normalized form:
 				// this decides whether offsets found in the folded string are
 				// valid positions in the keyword the popup renders.
@@ -2122,22 +2126,13 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.indexGeneration++;
 	}
 
-	// Longest-match-wins lives here now: buckets are ordered by folded key
-	// length, and manual entries were inserted first so a stable sort keeps
-	// them ahead of vault entries of the same length.
+	// Longest-match-wins: the matchers walk keyLengths from the longest
+	// down and look each slice up in byKey. Within one key, candidates keep
+	// the entries' order — manual entries were inserted first, so they win
+	// over vault entries with the same spelling.
 	private buildBuckets() {
-		this.byLastChar = new Map();
-		this.byFirstChar = new Map();
-
-		const push = (
-			bucket: Map<string, FoldedKey[]>,
-			char: string,
-			value: FoldedKey
-		) => {
-			const list = bucket.get(char);
-			if (list) list.push(value);
-			else bucket.set(char, [value]);
-		};
+		this.byKey = new Map();
+		const lengths = new Set<number>();
 
 		for (const entry of this.entries) {
 			for (const key of entry.folded) {
@@ -2147,15 +2142,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					key,
 					ambiguous: this.ambiguousKeys.has(key),
 				};
-				push(this.byLastChar, key.charAt(key.length - 1), folded);
-				push(this.byFirstChar, key.charAt(0), folded);
+				const list = this.byKey.get(key);
+				if (list) list.push(folded);
+				else this.byKey.set(key, [folded]);
+				lengths.add(key.length);
 			}
 		}
 
-		const byKeyLength = (a: FoldedKey, b: FoldedKey) =>
-			b.key.length - a.key.length;
-		for (const list of this.byLastChar.values()) list.sort(byKeyLength);
-		for (const list of this.byFirstChar.values()) list.sort(byKeyLength);
+		this.keyLengths = [...lengths].sort((a, b) => b - a);
 	}
 
 	private isInCodeContext(
@@ -2629,36 +2623,22 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const text = folded.folded;
 		if (!text) return null;
 
-		const bucket = this.byLastChar.get(text.charAt(text.length - 1));
-		if (!bucket) return null;
-
-		for (const { entry, key, ambiguous } of bucket) {
-			const kwLen = key.length;
+		for (const kwLen of this.keyLengths) {
 			if (text.length < kwLen) continue;
-
 			const foldedStart = text.length - kwLen;
-			if (text.substring(foldedStart) !== key) continue;
+			const candidates = this.byKey.get(text.substring(foldedStart));
+			if (!candidates) continue;
 			// Refuse a match that begins inside an expansion such as ß → ss;
 			// replacing from there would eat half a character.
 			if (!isFoldBoundary(folded, foldedStart)) continue;
 
 			const start = toSrcIndex(folded, foldedStart);
-
-			// Two notes folding to the same spelling only match on the exact
-			// one, so "Zurich" never links [[Zürich]] when both exist.
-			if (
-				ambiguous &&
-				this.normalize(textBefore.substring(start)) !== entry.exact
-			)
-				continue;
-
 			if (start > 0) {
 				const ch = textBefore.charAt(start - 1);
 				if (/[\p{L}\p{N}\p{M}]/u.test(ch)) continue;
 			}
 			// "#Berlin" is a tag, not a mention of the note Berlin.
 			if (endsInHashtag(textBefore.substring(0, start))) continue;
-
 			if (textBefore.substring(start, start + 2) === "[[") continue;
 			if (
 				start >= 2 &&
@@ -2666,12 +2646,23 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			)
 				continue;
 
-			return {
-				keyword: entry.keyword,
-				target: entry.target,
-				start,
-				typedText: textBefore.substring(start),
-			};
+			for (const { entry, ambiguous } of candidates) {
+				// Two notes folding to the same spelling only match on the
+				// exact one, so "Zurich" never links [[Zürich]] when both
+				// exist.
+				if (
+					ambiguous &&
+					this.normalize(textBefore.substring(start)) !== entry.exact
+				)
+					continue;
+
+				return {
+					keyword: entry.keyword,
+					target: entry.target,
+					start,
+					typedText: textBefore.substring(start),
+				};
+			}
 		}
 
 		return null;
