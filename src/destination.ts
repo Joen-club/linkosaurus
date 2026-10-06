@@ -37,3 +37,37 @@ export function hashStrings(parts: Iterable<string>): string {
 	}
 	return (h >>> 0).toString(36);
 }
+
+/**
+ * The folder filter as comparable prefixes: one folder per line, Windows
+ * separators and leading slashes tolerated, compared without case (vaults
+ * on macOS and Windows treat "Templates" and "templates" as one folder).
+ */
+export function parseFolderList(raw: string): string[] {
+	const out: string[] = [];
+	for (const line of raw.split("\n")) {
+		let f = line.trim().replace(/\\/g, "/").replace(/^\/+/, "");
+		f = f.replace(/\/+$/, "");
+		if (!f) continue;
+		const key = f.toLowerCase() + "/";
+		if (!out.includes(key)) out.push(key);
+	}
+	return out;
+}
+
+export function isInFolders(path: string, folders: string[]): boolean {
+	if (folders.length === 0) return false;
+	const p = path.toLowerCase();
+	return folders.some((f) => p.startsWith(f));
+}
+
+/** Applies an include/exclude folder filter. An empty list lets all through. */
+export function passesFolderFilter(
+	path: string,
+	folders: string[],
+	mode: "include" | "exclude"
+): boolean {
+	if (folders.length === 0) return true;
+	const inside = isInFolders(path, folders);
+	return mode === "include" ? inside : !inside;
+}

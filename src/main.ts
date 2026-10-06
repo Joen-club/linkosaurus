@@ -53,7 +53,12 @@ import {
 	propertyLinkFromEntry,
 	type PropertyMatcher,
 } from "./properties";
-import { hashStrings, isPluginOwnedNote } from "./destination";
+import {
+	hashStrings,
+	isPluginOwnedNote,
+	parseFolderList,
+	passesFolderFilter,
+} from "./destination";
 import { clampRelinkInterval } from "./settings";
 import {
 	formatAliasLink,
@@ -650,7 +655,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			// punctuation or a separator like "-" in "T-Rex - Facebook" — ends
 			// the current keyword, so keep the link that was already created
 			// instead of undoing it.
-			if (!/[\p{L}\p{N}]/u.test(text)) {
+			if (!/[\p{L}\p{N}\p{M}]/u.test(text)) {
 				this.clearPendingUndo();
 				return false;
 			}
@@ -1141,7 +1146,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				}
 			}
 			const atStartBoundary =
-				!prevChar || !/[\p{L}\p{N}]/u.test(prevChar);
+				!prevChar || !/[\p{L}\p{N}\p{M}]/u.test(prevChar);
 
 			if (atStartBoundary && this.settings.emailAutolinkEnabled) {
 				const email = matchEmailInText(text, i, prevChar);
@@ -1195,7 +1200,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 							: charAfter;
 					if (
 						nextChar &&
-						/[\p{L}\p{N}]/u.test(nextChar)
+						/[\p{L}\p{N}\p{M}]/u.test(nextChar)
 					)
 						continue;
 
@@ -1544,13 +1549,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// Whether the bulk linkers may write into this note at all.
 	isLinkableDestination(file: TFile): boolean {
 		if (file.extension !== "md") return false;
-		const folderPaths = this.parseFolderFilter();
-		if (folderPaths.length > 0) {
-			const inFolder = folderPaths.some((fp) => file.path.startsWith(fp));
-			const mode = this.settings.folderFilterMode;
-			if (mode === "include" && !inFolder) return false;
-			if (mode === "exclude" && inFolder) return false;
-		}
+		if (!this.passesFolderFilter(file.path)) return false;
 		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as
 			| Record<string, unknown>
 			| undefined;
@@ -1675,17 +1674,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const seen = new Set<string>();
 		this.vaultEntries = [];
 
-		const folderPaths = this.parseFolderFilter();
-		const filterMode = this.settings.folderFilterMode;
-
 		for (const file of this.app.vault.getMarkdownFiles()) {
-			if (folderPaths.length > 0) {
-				const inFolder = folderPaths.some((fp) =>
-					file.path.startsWith(fp)
-				);
-				if (filterMode === "include" && !inFolder) continue;
-				if (filterMode === "exclude" && inFolder) continue;
-			}
+			if (!this.passesFolderFilter(file.path)) continue;
 
 			const noteName = file.basename.trim();
 			if (!noteName) continue;
@@ -1911,7 +1901,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			return { url, end };
 		}
 
-		if (prevChar && /[\p{L}\p{N}]/u.test(prevChar)) return null;
+		if (prevChar && /[\p{L}\p{N}\p{M}]/u.test(prevChar)) return null;
 		// Same guard as the typing path: never link the domain half of an
 		// email address as if it stood alone.
 		if (isEmailBoundary(text, i)) return null;
@@ -1942,13 +1932,23 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return { url, end };
 	}
 
-	private parseFolderFilter(): string[] {
-		if (!this.settings.folderFilter.trim()) return [];
-		return this.settings.folderFilter
-			.split("\n")
-			.map((f) => f.trim())
-			.filter((f) => f.length > 0)
-			.map((f) => (f.endsWith("/") ? f : f + "/"));
+	private folderListCache: { raw: string; folders: string[] } | null = null;
+
+	// Parsed once per distinct setting value; asked for every file.
+	private folderList(): string[] {
+		const raw = this.settings.folderFilter;
+		if (this.folderListCache?.raw !== raw) {
+			this.folderListCache = { raw, folders: parseFolderList(raw) };
+		}
+		return this.folderListCache.folders;
+	}
+
+	private passesFolderFilter(path: string): boolean {
+		return passesFolderFilter(
+			path,
+			this.folderList(),
+			this.settings.folderFilterMode
+		);
 	}
 
 	private rebuildEntries() {
@@ -2159,7 +2159,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const preceding = textBefore.substring(0, idx);
 		let displayStart = 0;
 		for (let j = preceding.length - 1; j >= 0; j--) {
-			if (!/[\p{L}\p{N}]/u.test(preceding.charAt(j))) {
+			if (!/[\p{L}\p{N}\p{M}]/u.test(preceding.charAt(j))) {
 				displayStart = j + 1;
 				break;
 			}
@@ -2231,7 +2231,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const preceding = textBefore.substring(0, idx);
 		let displayStart = 0;
 		for (let j = preceding.length - 1; j >= 0; j--) {
-			if (!/[\p{L}\p{N}]/u.test(preceding.charAt(j))) {
+			if (!/[\p{L}\p{N}\p{M}]/u.test(preceding.charAt(j))) {
 				displayStart = j + 1;
 				break;
 			}
@@ -2281,7 +2281,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const idx = textBefore.lastIndexOf(trigger);
 		if (idx === -1) return null;
 		const before = idx > 0 ? textBefore.charAt(idx - 1) : "";
-		if (/[\p{L}\p{N}]/u.test(before)) return null;
+		if (/[\p{L}\p{N}\p{M}]/u.test(before)) return null;
 		if (before === trigger.charAt(0)) return null;
 
 		const query = textBefore.substring(idx + trigger.length);
@@ -2466,7 +2466,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		delim: string,
 		skipNorm?: string
 	): { replacement: string; end: number } | null {
-		if (pos > 0 && /[\p{L}\p{N}]/u.test(text.charAt(pos - 1))) return null;
+		if (pos > 0 && /[\p{L}\p{N}\p{M}]/u.test(text.charAt(pos - 1))) return null;
 
 		const spaceAfterWord = text.indexOf(delim, pos);
 		if (spaceAfterWord === -1 || spaceAfterWord === pos) return null;
@@ -2565,7 +2565,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 			if (start > 0) {
 				const ch = textBefore.charAt(start - 1);
-				if (/[\p{L}\p{N}]/u.test(ch)) continue;
+				if (/[\p{L}\p{N}\p{M}]/u.test(ch)) continue;
 			}
 			// "#Berlin" is a tag, not a mention of the note Berlin.
 			if (endsInHashtag(textBefore.substring(0, start))) continue;

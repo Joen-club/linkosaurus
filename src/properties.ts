@@ -163,7 +163,7 @@ export function matchPropertySearchTrigger(
 	if (idx === -1) return null;
 
 	const before = idx > 0 ? value.charAt(idx - 1) : "";
-	if (/[\p{L}\p{N}]/u.test(before)) return null;
+	if (/[\p{L}\p{N}\p{M}]/u.test(before)) return null;
 	if (before === trigger.charAt(0)) return null;
 
 	const query = value.substring(idx + trigger.length);

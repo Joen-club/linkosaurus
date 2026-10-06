@@ -29,3 +29,30 @@ test("hashStrings is stable and order-sensitive", () => {
 	// The separator keeps part boundaries apart.
 	assert.notEqual(hashStrings(["ab", "c"]), hashStrings(["a", "bc"]));
 });
+
+import { isInFolders, parseFolderList, passesFolderFilter } from "../src/destination";
+
+test("parseFolderList normalises separators, slashes and case", () => {
+	assert.deepEqual(parseFolderList("Templates\n/Daily Notes/\nA\\B\n\n  "), [
+		"templates/",
+		"daily notes/",
+		"a/b/",
+	]);
+	assert.deepEqual(parseFolderList("x\nX/"), ["x/"]);
+	assert.deepEqual(parseFolderList("/"), []);
+});
+
+test("isInFolders compares without case and only on folder boundaries", () => {
+	const folders = parseFolderList("Templates");
+	assert.equal(isInFolders("templates/Daily.md", folders), true);
+	assert.equal(isInFolders("Templates/Sub/Daily.md", folders), true);
+	assert.equal(isInFolders("TemplatesOld/Daily.md", folders), false);
+});
+
+test("passesFolderFilter honours include and exclude", () => {
+	const folders = parseFolderList("Work");
+	assert.equal(passesFolderFilter("Work/a.md", folders, "include"), true);
+	assert.equal(passesFolderFilter("Home/a.md", folders, "include"), false);
+	assert.equal(passesFolderFilter("Work/a.md", folders, "exclude"), false);
+	assert.equal(passesFolderFilter("Home/a.md", [], "include"), true);
+});
