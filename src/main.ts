@@ -2618,8 +2618,22 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		typedText: string;
 	} | null {
 		if (!textBefore) return null;
+		const maxKeyLen = this.keyLengths[0];
+		if (maxKeyLen === undefined) return null;
 
-		const folded = foldWithMap(textBefore, this.foldTable);
+		// Only the tail of the line can hold a keyword ending at the cursor,
+		// so only that tail is folded — a long paragraph is no longer folded
+		// in full on every keystroke. The factor leaves room for characters
+		// that fold away (combining marks); the cut is moved off surrogate
+		// pairs and combining marks so it lands on a character boundary.
+		let cut = Math.max(0, textBefore.length - (maxKeyLen * 3 + 2));
+		while (cut > 0) {
+			const code = textBefore.charCodeAt(cut);
+			if (code >= 0xdc00 && code <= 0xdfff) cut--;
+			else if (/\p{M}/u.test(textBefore.charAt(cut))) cut--;
+			else break;
+		}
+		const folded = foldWithMap(textBefore.substring(cut), this.foldTable);
 		const text = folded.folded;
 		if (!text) return null;
 
@@ -2632,7 +2646,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			// replacing from there would eat half a character.
 			if (!isFoldBoundary(folded, foldedStart)) continue;
 
-			const start = toSrcIndex(folded, foldedStart);
+			const start = cut + toSrcIndex(folded, foldedStart);
 			if (start > 0) {
 				const ch = textBefore.charAt(start - 1);
 				if (/[\p{L}\p{N}\p{M}]/u.test(ch)) continue;

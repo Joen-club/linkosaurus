@@ -107,3 +107,15 @@ test("matchKeyword finds the keyword ending at the cursor", () => {
 	assert.equal(p.matchKeyword("#Open"), null);
 	assert.equal(p.matchKeyword("[[Open"), null);
 });
+
+test("matchKeyword only folds the tail of a long line", () => {
+	const p = plugin("Berlin\nŁukasz");
+	const long = "x ".repeat(5000) + "trip to Berlin";
+	const m = p.matchKeyword(long);
+	assert.equal(m?.target, "Berlin");
+	assert.equal(m?.start, long.length - "Berlin".length);
+	const folded = "ß".repeat(300) + " Lukasz";
+	assert.equal(p.matchKeyword(folded)?.start, 301);
+	// A word that only partly fits the window is still not matched inside.
+	assert.equal(p.matchKeyword("a".repeat(500) + "Berlin"), null);
+});
