@@ -1,6 +1,7 @@
 import esbuild from "esbuild";
 import process from "process";
 import { builtinModules } from "node:module";
+import { readdirSync } from "node:fs";
 
 const banner =
 `/*
@@ -16,7 +17,11 @@ const prod = (mode === "production");
 // test framework to the dependency tree.
 if (mode === "test") {
 	await esbuild.build({
-		entryPoints: ["test/fold.test.ts", "test/email.test.ts", "test/properties.test.ts"],
+		// Every *.test.ts in test/ is picked up, so a new test file needs no
+		// change here.
+		entryPoints: readdirSync("test")
+			.filter((f) => f.endsWith(".test.ts"))
+			.map((f) => `test/${f}`),
 		bundle: true,
 		external: builtinModules.flatMap((m) => [m, `node:${m}`]),
 		format: "esm",
