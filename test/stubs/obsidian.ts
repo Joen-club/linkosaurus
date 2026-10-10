@@ -84,3 +84,10 @@ export function prepareFuzzySearch(query: string) {
 
 export function renderMatches(): void {}
 export function setIcon(): void {}
+
+// Obsidian's per-editor info (which note an editor shows).
+import { StateField } from "@codemirror/state";
+export const editorInfoField = StateField.define<{ file: unknown } | null>({
+	create: () => null,
+	update: (value) => value,
+});

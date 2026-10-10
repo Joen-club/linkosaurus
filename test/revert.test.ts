@@ -100,3 +100,50 @@ test("a swiped or dictated word is its own undo step and Backspace takes it back
 	assert.equal(internals.revertAutolink(view), true);
 	assert.equal(view.state.doc.toString(), "Trip to Berlin ");
 });
+
+test("the opt-out follows the editor's own note, not the active one", async () => {
+	const { editorInfoField } = (await import("obsidian")) as unknown as {
+		editorInfoField: import("@codemirror/state").StateField<{ file: unknown } | null>;
+	};
+	const active = { path: "Notes/a.md", extension: "md", basename: "a" };
+	const hovered = { path: "Archive/old.md", extension: "md", basename: "old" };
+	const p = new AutoLinkKeywordsPlugin(
+		{
+			workspace: { getActiveFile: () => active },
+			metadataCache: { getFileCache: () => null },
+		} as never,
+		{} as never
+	);
+	Object.assign(p.settings, { scanVaultLinks: false, keywordList: "Berlin", neverLinkFolders: "Archive" });
+	p.rebuildFoldTable();
+	p.parseBlocklist();
+	p.parseManualKeywords();
+	p.parseTlds();
+	const internals = p as unknown as {
+		handleInput(v: unknown, from: number, to: number, text: string): boolean;
+		handleEditorUpdate(v: unknown, docChanged: boolean, sel: boolean, changes: unknown): void;
+	};
+	const makeView = (file: unknown) => {
+		const doc = "Trip to Berlin";
+		return {
+			state: EditorState.create({
+				doc,
+				selection: { anchor: doc.length },
+				extensions: [editorInfoField.init(() => ({ file }))],
+			}),
+			composing: false,
+			compositionStarted: false,
+			dispatch(spec: TransactionSpec) {
+				const tr = this.state.update(spec);
+				this.state = tr.state;
+				internals.handleEditorUpdate(this, tr.docChanged, true, tr.changes);
+			},
+		};
+	};
+	const inHover = makeView(hovered);
+	assert.equal(internals.handleInput(inHover, 14, 14, " "), false);
+	assert.equal(inHover.state.doc.toString(), "Trip to Berlin");
+	const inMain = makeView(active);
+	assert.equal(internals.handleInput(inMain, 14, 14, " "), true);
+	assert.equal(inMain.state.doc.toString(), "Trip to [[Berlin]] ");
+});

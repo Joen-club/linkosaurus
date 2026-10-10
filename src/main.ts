@@ -26,6 +26,7 @@ import {
 	Prec,
 	type Annotation,
 	type ChangeDesc,
+	type StateField,
 } from "@codemirror/state";
 import { isolateHistory } from "@codemirror/commands";
 import {
@@ -1012,7 +1013,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		if (!textBefore.length) return false;
 		if (this.isInCodeContext(view, pos, line.text, colOffset)) return false;
-		if (!this.activeFileAllowsLinks()) return false;
+		if (!this.activeFileAllowsLinks(view)) return false;
 		if (this.isInsideWikilink(textBefore)) return false;
 		// An active note search owns its query: spaces and punctuation are
 		// part of what the user is filtering for, so the auto-linker must not
@@ -1060,7 +1061,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		const alias = this.matchAlias(textBefore);
 		if (alias) {
-			const file = this.app.workspace.getActiveFile();
+			const file = this.fileOfView(view);
 			if (file && this.normalize(alias.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + alias.start;
@@ -1079,7 +1080,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		const direct = this.matchKeyword(textBefore);
 		if (direct) {
-			const file = this.app.workspace.getActiveFile();
+			const file = this.fileOfView(view);
 			if (file && this.normalize(direct.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + direct.start;
@@ -1149,7 +1150,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 
 		if (!this.hasBulkWork()) return false;
 		if (text.length > 10000) return false;
-		if (!this.activeFileAllowsLinks()) return false;
+		if (!this.activeFileAllowsLinks(view)) return false;
 
 		const state = view.state;
 		const line = state.doc.lineAt(from);
@@ -1167,7 +1168,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				? state.doc.sliceString(to, to + 1)
 				: "";
 
-		const file = this.app.workspace.getActiveFile();
+		const file = this.fileOfView(view);
 		const selfName = file?.basename ?? "";
 		const replaced = this.replaceKeywordsInText(
 			text,
@@ -1201,7 +1202,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (!text || text.length > 10000) return false;
 		// URLs and email addresses link without any keyword.
 		if (!this.hasBulkWork()) return false;
-		if (!this.activeFileAllowsLinks()) return false;
+		if (!this.activeFileAllowsLinks(view)) return false;
 
 		const state = view.state;
 		const { from, to } = state.selection.main;
@@ -1212,7 +1213,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const textBefore = line.text.substring(0, colOffset);
 		if (this.isInsideWikilink(textBefore)) return false;
 
-		const file = this.app.workspace.getActiveFile();
+		const file = this.fileOfView(view);
 		const selfName = file?.basename ?? "";
 
 		const charBefore = from > 0 ? state.doc.sliceString(from - 1, from) : "";
@@ -1702,9 +1703,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		if (this.isInCodeContext(d.view, d.from, line.text, colOffset))
 			return;
 		if (this.isInsideWikilink(line.text.substring(0, colOffset))) return;
-		if (!this.activeFileAllowsLinks()) return;
+		if (!this.activeFileAllowsLinks(d.view)) return;
 
-		const file = this.app.workspace.getActiveFile();
+		const file = this.fileOfView(d.view);
 		const selfName = file?.basename ?? "";
 		let regionEnd = end;
 		let finalText = d.text;
@@ -1864,10 +1865,25 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return this.neverFolderCache.folders;
 	}
 
-	// The note behind the editor being typed in. Typing always happens in
-	// the active editor, so the active file is that note.
-	private activeFileAllowsLinks(): boolean {
-		return this.allowsLinksIn(this.app.workspace.getActiveFile());
+	// The note behind an editor. Hover previews, embeds and canvas cards
+	// edit a different note than the active one; Obsidian's editorInfoField
+	// names it. Without that field the active file is the best guess.
+	private fileOfView(view: EditorView): TFile | null {
+		const field = (obsidian as unknown as Record<string, unknown>)
+			.editorInfoField as StateField<{ file?: TFile | null }> | undefined;
+		if (field) {
+			try {
+				const info = view.state.field(field, false);
+				if (info) return info.file ?? null;
+			} catch {
+				// Not an Obsidian editor: fall back below.
+			}
+		}
+		return this.app.workspace.getActiveFile();
+	}
+
+	private activeFileAllowsLinks(view: EditorView): boolean {
+		return this.allowsLinksIn(this.fileOfView(view));
 	}
 
 	// Writes the linked version of a note. vault.process (Obsidian 1.1) reads
