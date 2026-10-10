@@ -85,3 +85,18 @@ test("Backspace does nothing special once the user typed on", () => {
 	assert.equal(internals.revertAutolink(view), false);
 	assert.equal(view.state.doc.toString(), "Trip to [[Berlin]] x");
 });
+
+test("a swiped or dictated word is its own undo step and Backspace takes it back", () => {
+	const { internals, view, specs } = setup("Berlin", "Trip to ");
+	const fire = (internals as unknown as { fireDeferredBulk(d: unknown): void }).fireDeferredBulk.bind(internals);
+	// The keyboard committed "Berlin " as one block; it already stands.
+	view.dispatch({ changes: { from: 8, insert: "Berlin " }, selection: { anchor: 15 } });
+	specs.length = 0;
+	fire({ kind: "bulk", view, from: 8, text: "Berlin ", time: Date.now() });
+	assert.equal(view.state.doc.toString(), "Trip to [[Berlin]] ");
+	assert.equal(specs[0]!.userEvent, "input.autolink");
+	const ann = specs[0]!.annotations;
+	assert.ok(ann && !Array.isArray(ann) && ann.type === isolateHistory);
+	assert.equal(internals.revertAutolink(view), true);
+	assert.equal(view.state.doc.toString(), "Trip to Berlin ");
+});

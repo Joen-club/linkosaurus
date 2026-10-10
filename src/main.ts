@@ -1729,14 +1729,33 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					...(cursorAtEnd
 						? { selection: { anchor: d.from + replaced.length } }
 						: {}),
+					// The committed text is already in the document, so the
+					// links get their own undo step, as when typing.
+					annotations: historyIsolation(),
+					userEvent: "input.autolink",
 				});
+				const now = Date.now();
 				this.lastAutolink = {
 					view: d.view,
-					time: Date.now(),
+					time: now,
 					from: d.from,
 					to: end,
 					text: d.text,
 				};
+				// Backspace right after a swiped or dictated word takes the
+				// links back, as it does for a typed one.
+				const word = d.text.replace(/[\s\p{P}]+$/u, "");
+				this.revertable =
+					cursorAtEnd && word
+						? {
+								view: d.view,
+								time: now,
+								from: d.from,
+								insert: replaced,
+								restore: d.text,
+								wordLength: word.length,
+							}
+						: null;
 				regionEnd = d.from + replaced.length;
 				finalText = replaced;
 			}
