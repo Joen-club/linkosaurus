@@ -198,3 +198,13 @@ test("leaves HTML alone: comments, tags with attributes and HTML blocks", () => 
 	// Not HTML: comparisons and hearts stay ordinary text.
 	assert.equal(p.replaceKeywordsInText("a < b Berlin <3", "", ""), "a < b [[Berlin]] <3");
 });
+
+test("a code fence inside a list item protects its whole block", () => {
+	const p = plugin("Berlin");
+	const list = "- ```python\nx = 1\n\nBerlin = 2\n```\nBerlin";
+	assert.equal(p.replaceKeywordsInText(list, "", ""), "- ```python\nx = 1\n\nBerlin = 2\n```\n[[Berlin]]");
+	const numbered = "1. ```\nBerlin\n\nBerlin\n```";
+	assert.equal(p.replaceKeywordsInText(numbered, "", ""), numbered);
+	// Mid-line, three backticks are no fence.
+	assert.equal(p.replaceKeywordsInText("a ```Berlin``` Berlin", "", ""), "a ```Berlin``` [[Berlin]]");
+});

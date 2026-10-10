@@ -132,6 +132,17 @@ export function isAtLineStart(text: string, i: number, charBefore = ""): boolean
 }
 
 /**
+ * Like isAtLineStart, but a fence may also follow list markers: "- ```" or
+ * "1. ```" opens a code block inside a list item.
+ */
+function isAtFenceStart(text: string, i: number, charBefore: string): boolean {
+	const lineStart = text.lastIndexOf("\n", i - 1) + 1;
+	if (lineStart === 0 && charBefore !== "" && charBefore !== "\n") return false;
+	const prefix = text.substring(lineStart, i);
+	return /^[ \t>]*(?:(?:[-*+]|\d{1,9}[.)])[ \t]+[ \t>]*)*$/.test(prefix);
+}
+
+/**
  * A fenced code block (``` or ~~~, three or more) starting at `i`. Fences
  * only open at the start of a line; the block ends at a line that starts
  * with at least as many of the same character, or runs to the end of the
@@ -144,7 +155,7 @@ export function skipFencedCode(text: string, i: number, charBefore = ""): number
 	while (n < text.length && text.charAt(n) === ch) n++;
 	const len = n - i;
 	if (len < 3) return -1;
-	if (!isAtLineStart(text, i, charBefore)) return -1;
+	if (!isAtFenceStart(text, i, charBefore)) return -1;
 	// Backtick fences cannot carry a backtick in their info string.
 	const lineEnd = text.indexOf("\n", n);
 	const info = text.substring(n, lineEnd === -1 ? text.length : lineEnd);
