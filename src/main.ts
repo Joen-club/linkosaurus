@@ -1979,13 +1979,16 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			try {
 				const result = await this.writeLinked(item.file, item);
 				if (result) records.push({ file: item.file, ...result });
+				// Only a successful write marks the note as done; a failed
+				// one (locked file, sync conflict) is retried next time.
+				this.relinkSkip.set(item.file.path, {
+					mtime: item.file.stat.mtime,
+					generation: this.indexGeneration,
+				});
 			} catch (error) {
+				this.relinkSkip.delete(item.file.path);
 				console.error(`Linkosaurus: could not link ${item.file.path}`, error);
 			}
-			this.relinkSkip.set(item.file.path, {
-				mtime: item.file.stat.mtime,
-				generation: this.indexGeneration,
-			});
 		}
 		return records;
 	}

@@ -116,3 +116,25 @@ test("unchanged notes are skipped on the next run", async () => {
 	// remembered as having nothing to link.
 	assert.deepEqual(second.items.map((i) => i.file.path), ["b.md"]);
 });
+
+test("a failed write is retried on the next run", async () => {
+	const { app, internals, data } = setup({ "a.md": "Berlin" });
+	const process = app.vault.process;
+	let failures = 1;
+	app.vault.process = async (f, fn) => {
+		if (failures-- > 0) throw new Error("locked");
+		return process(f, fn);
+	};
+	const original = console.error;
+	console.error = () => {};
+	try {
+		await internals.confirmVaultRun(await internals.planRelink());
+	} finally {
+		console.error = original;
+	}
+	assert.equal(data.get("a.md"), "Berlin");
+	const second = await internals.planRelink();
+	assert.deepEqual(second.items.map((i) => i.file.path), ["a.md"]);
+	await internals.confirmVaultRun(second);
+	assert.equal(data.get("a.md"), "[[Berlin]]");
+});
