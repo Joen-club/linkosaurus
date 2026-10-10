@@ -635,6 +635,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.aliasSuggest?.close();
 		this.aliasSuggest = null;
 		this.lastAutolink = null;
+		// Drop the references to editor views so closed panes can go.
+		this.revertable = null;
+		this.suppressed = [];
 		this.clearPendingUndo();
 		this.cancelDeferredAutolinks();
 	}
