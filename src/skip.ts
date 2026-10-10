@@ -188,3 +188,44 @@ export function skipInlineCode(text: string, i: number): number {
 	}
 	return -1;
 }
+
+// Block-level HTML elements: a line starting with one of these opens an
+// HTML block that runs to the next blank line (CommonMark rule 6), and
+// Markdown inside it is not rendered.
+const HTML_BLOCK_TAGS = new Set(
+	(
+		"address article aside blockquote body caption center col colgroup dd " +
+		"details dialog dir div dl dt fieldset figcaption figure footer form " +
+		"h1 h2 h3 h4 h5 h6 head header hr html iframe legend li link main menu " +
+		"nav ol p pre script section source style summary table tbody td " +
+		"textarea tfoot th thead title tr ul video audio canvas svg"
+	).split(" ")
+);
+
+/**
+ * HTML starting at `i`: a comment <!-- … --> (unclosed runs to the end of
+ * the text), an HTML block opened by a block-level tag at the start of a
+ * line (runs to the next blank line), or a single inline tag with its
+ * attributes. Returns -1 when no HTML starts there, so "a < b" or "<3"
+ * stay ordinary text.
+ */
+export function skipHtml(text: string, i: number, charBefore = ""): number {
+	if (text.charAt(i) !== "<") return -1;
+	if (text.startsWith("<!--", i)) {
+		const close = text.indexOf("-->", i + 4);
+		return close === -1 ? text.length : close + 3;
+	}
+	const m = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)(?:[ \t\n][^<>]*)?\/?>/.exec(
+		text.substring(i, i + 2000)
+	);
+	if (!m) return -1;
+	const tagEnd = i + m[0].length;
+	if (
+		HTML_BLOCK_TAGS.has(m[2]!.toLowerCase()) &&
+		isAtLineStart(text, i, charBefore)
+	) {
+		const blank = /\n[ \t]*(?:\n|$)/.exec(text.substring(tagEnd));
+		return blank ? tagEnd + blank.index : text.length;
+	}
+	return tagEnd;
+}

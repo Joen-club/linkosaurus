@@ -90,6 +90,7 @@ import {
 	skipFencedCode,
 	skipInlineCode,
 	skipInlineMath,
+	skipHtml,
 } from "./skip";
 
 interface AutoLinkSettings {
@@ -1315,6 +1316,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			}
 
 			const ch = text.charAt(i);
+			if (ch === "<" && skipRegion(skipHtml(text, i, charBefore))) continue;
 			if (ch === "%" && skipRegion(skipComment(text, i))) continue;
 			if (ch === "$") {
 				if (skipRegion(skipDisplayMath(text, i))) continue;

@@ -179,3 +179,22 @@ test("allowsLinksIn honours never-link folders, opt-out property and plugin note
 	assert.equal(p.allowsLinksIn(file("Notes/board.md")), false);
 	assert.equal(p.allowsLinksIn(null), true);
 });
+
+test("leaves HTML alone: comments, tags with attributes and HTML blocks", () => {
+	const p = plugin("Berlin");
+	assert.equal(
+		p.replaceKeywordsInText('<img alt="Berlin"> Berlin', "", ""),
+		'<img alt="Berlin"> [[Berlin]]'
+	);
+	assert.equal(
+		p.replaceKeywordsInText('<a href="/wiki/Berlin">Berlin</a>', "", ""),
+		'<a href="/wiki/Berlin">[[Berlin]]</a>'
+	);
+	assert.equal(p.replaceKeywordsInText("<!-- Berlin --> Berlin", "", ""), "<!-- Berlin --> [[Berlin]]");
+	assert.equal(
+		p.replaceKeywordsInText("<div>\nBerlin\n</div>\n\nBerlin", "", ""),
+		"<div>\nBerlin\n</div>\n\n[[Berlin]]"
+	);
+	// Not HTML: comparisons and hearts stay ordinary text.
+	assert.equal(p.replaceKeywordsInText("a < b Berlin <3", "", ""), "a < b [[Berlin]] <3");
+});
