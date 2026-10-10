@@ -1820,11 +1820,12 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		return true;
 	}
 
-	// Whether the vault-wide linkers may write into this note: the opt-outs
-	// above plus the folder filter.
+	// Whether the vault-wide linkers may write into this note: the same
+	// opt-outs as typing. The scan folder filter only decides which notes
+	// become keywords; "Never link inside these folders" decides where
+	// links are written.
 	isLinkableDestination(file: TFile): boolean {
 		if (file.extension !== "md") return false;
-		if (!this.passesFolderFilter(file.path)) return false;
 		return this.allowsLinksIn(file);
 	}
 

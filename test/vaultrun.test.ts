@@ -138,3 +138,11 @@ test("a failed write is retried on the next run", async () => {
 	await internals.confirmVaultRun(second);
 	assert.equal(data.get("a.md"), "[[Berlin]]");
 });
+
+test("the scan folder filter does not limit where the vault run writes", async () => {
+	const { internals } = setup({ "People/a.md": "Berlin", "Daily/b.md": "Tokyo" });
+	const plugin = internals as unknown as { settings: Record<string, unknown> };
+	Object.assign(plugin.settings, { folderFilterMode: "include", folderFilter: "People" });
+	const plan = await internals.planRelink();
+	assert.deepEqual(plan.items.map((i) => i.file.path).sort(), ["Daily/b.md", "People/a.md"]);
+});
