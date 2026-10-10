@@ -2605,7 +2605,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			s.singleWordDelimiter,
 			s.multiWordDelimiter,
 		];
-		for (const e of this.entries) parts.push(e.exact, e.target);
+		// The keyword too: without case sensitivity "ml" and "ML" share a key,
+		// but the popup shows (and inserts) the spelling.
+		for (const e of this.entries) parts.push(e.exact, e.target, e.keyword);
 		const signature = hashStrings(parts) + ":" + this.entries.length;
 		if (signature === this.indexSignature) return;
 		this.indexSignature = signature;

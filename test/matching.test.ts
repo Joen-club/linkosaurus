@@ -208,3 +208,15 @@ test("a code fence inside a list item protects its whole block", () => {
 	// Mid-line, three backticks are no fence.
 	assert.equal(p.replaceKeywordsInText("a ```Berlin``` Berlin", "", ""), "a ```Berlin``` [[Berlin]]");
 });
+
+test("search popup: a changed spelling of a keyword shows up at once", () => {
+	const p = plugin("ml = X") as unknown as {
+		settings: { keywordList: string };
+		parseManualKeywords(): void;
+		getAliasSuggestions(q: string, f: null, limit?: number): { entry: { keyword: string } }[];
+	};
+	assert.deepEqual(p.getAliasSuggestions("m", null).map((s) => s.entry.keyword), ["ml"]);
+	p.settings.keywordList = "ML = X";
+	p.parseManualKeywords();
+	assert.deepEqual(p.getAliasSuggestions("m", null).map((s) => s.entry.keyword), ["ML"]);
+});
