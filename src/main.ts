@@ -78,6 +78,7 @@ import {
 	formatWikilink,
 	sanitizeDisplay,
 	sanitizeTarget,
+	selfTargetName,
 } from "./wikilink";
 import {
 	endsInHashtag,
@@ -3736,11 +3737,15 @@ function getPropertySuggestCtor(): PropertySuggestCtor | null {
 	}
 
 	selectSuggestion(suggestion: AliasSuggestion): void {
-		const value = propertyLinkFromEntry(
-			sanitizeDisplay(suggestion.entry.keyword),
-			sanitizeTarget(suggestion.entry.target),
-			(text) => this.plugin.foldKey(text)
-		);
+		const foldKey = (text: string) => this.plugin.foldKey(text);
+		const keyword = sanitizeDisplay(suggestion.entry.keyword);
+		let target = sanitizeTarget(suggestion.entry.target);
+		// A keyword that is its own target ("C#") names the note without
+		// the characters a note name cannot hold, like formatWikilink.
+		if (foldKey(keyword) === foldKey(target)) {
+			target = selfTargetName(target) || target;
+		}
+		const value = propertyLinkFromEntry(keyword, target, foldKey);
 
 		this.setValue(value);
 		// setValue writes the element; Obsidian only takes the value into its

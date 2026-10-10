@@ -5,6 +5,7 @@ import {
 	formatWikilink,
 	sanitizeDisplay,
 	sanitizeTarget,
+	selfTargetName,
 } from "../src/wikilink";
 
 test("sanitizeTarget keeps paths, headings and block refs", () => {
@@ -39,4 +40,14 @@ test("formatWikilink and formatAliasLink return empty for empty halves", () => {
 	assert.equal(formatWikilink("[[]]", "Tokyo"), "");
 	assert.equal(formatAliasLink("Tokyo", "|"), "");
 	assert.equal(formatAliasLink("Tokyo", "trip"), "[[Tokyo|trip]]");
+});
+
+test("a keyword that is its own target never links to a heading, block or folder", () => {
+	assert.equal(formatWikilink("C#", "C#"), "[[C|C#]]");
+	assert.equal(formatWikilink("TCP/IP", "TCP/IP"), "[[TCPIP|TCP/IP]]");
+	assert.equal(formatWikilink("Meeting #3", "Meeting #3"), "[[Meeting 3|Meeting #3]]");
+	assert.equal(formatWikilink("#", "#"), "");
+	// An explicit target keeps its path and heading.
+	assert.equal(formatWikilink("C#", "CSharp"), "[[CSharp|C#]]");
+	assert.equal(selfTargetName("A/B#c^d"), "ABcd");
 });
