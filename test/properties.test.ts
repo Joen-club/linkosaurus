@@ -335,13 +335,18 @@ import {
 	looksLikeScalarValue,
 } from "../src/properties";
 
-test("dates, times, numbers and booleans are never linked", () => {
+test("booleans are never linked, dates and numbers only to an exact note", () => {
 	const dated = matcher({
-		lookup: (v) => (v === "2024-05-01" || v === "true" || v === "42" ? "Note" : undefined),
+		lookup: (v) => (v === "2026-10-10" || v === "true" || v === "null" ? v : undefined),
+		prefixCandidates: (v) => (v === "2024" || v === "2026-10" ? [v + " Review"] : []),
 	});
-	assert.equal(linkPropertyValue("2024-05-01", dated), null);
 	assert.equal(linkPropertyValue("true", dated), null);
-	assert.equal(linkPropertyValue("42", dated), null);
+	assert.equal(linkPropertyValue("null", dated), null);
+	// A daily note named exactly like the value: linked, as before.
+	assert.equal(linkPropertyValue("2026-10-10", dated), "[[2026-10-10]]");
+	// Never completed from a prefix.
+	assert.equal(linkPropertyValue("2024", dated), null);
+	assert.equal(linkPropertyValue("2026-10", dated), null);
 });
 
 test("looksLikeScalarValue recognises common scalar spellings", () => {

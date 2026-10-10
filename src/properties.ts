@@ -81,8 +81,11 @@ export function isLinkablePropertyType(type: string | undefined): boolean {
 
 /**
  * Dates, times, numbers and booleans written as text. They are values, not
- * names: "2024" or "true" must never turn into a link even when a note
- * happens to carry that name.
+ * names: they are never completed from a prefix ("2024" must not become
+ * "2024 Review"), and booleans and null are never linked at all. A date or
+ * number that is exactly a note's name (a daily note "2026-10-10") still
+ * links, as it always did; properties typed as date or number are skipped
+ * by their type before this.
  */
 export function looksLikeScalarValue(text: string): boolean {
 	const t = text.trim();
@@ -233,9 +236,9 @@ export function linkPropertyValue(
 	if (text.includes("[[") || text.includes("](")) return null;
 	// Values carrying markup or line breaks are not plain names.
 	if (/[\n\r|#^]/.test(text)) return null;
-	if (looksLikeScalarValue(text)) return null;
+	if (/^(?:true|false|null)$/i.test(text)) return null;
 
-	const resolved = resolveTarget(text, matcher);
+	const resolved = resolveTarget(text, matcher, !looksLikeScalarValue(text));
 	if (!resolved) return null;
 	const { target, viaPrefix } = resolved;
 	if (matcher.foldKey(target) === matcher.foldKey(matcher.selfName)) {
@@ -255,12 +258,13 @@ export function linkPropertyValue(
 
 function resolveTarget(
 	text: string,
-	matcher: PropertyMatcher
+	matcher: PropertyMatcher,
+	allowPrefix: boolean
 ): { target: string; viaPrefix: boolean } | undefined {
 	const exact = matcher.lookup(text);
 	if (exact) return { target: exact, viaPrefix: false };
 
-	if (!matcher.prefixMatchEnabled) return undefined;
+	if (!allowPrefix || !matcher.prefixMatchEnabled) return undefined;
 	// "Mu" completing to a note is a guess, not a name.
 	if (matcher.foldKey(text).length < MIN_PREFIX_LENGTH) return undefined;
 
