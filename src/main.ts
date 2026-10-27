@@ -477,9 +477,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				}
 				this.parseTlds();
 				const files = this.app.vault.getMarkdownFiles().length;
+				const activeFile = this.app.workspace.getActiveFile();
+				const excluded = this.linkingExclusionReason(activeFile);
+				const noteStatus = activeFile
+					? excluded ? `current note excluded (${excluded})` : "current note allowed"
+					: "no active note";
 				const message =
-					`Linkosaurus: ${this.entries.length} keywords indexed (${this.vaultEntries.length} from vault, ${this.manualEntries.length} manual); ${files} markdown files; auto-detect ${this.settings.scanVaultLinks ? "on" : "off"}.`;
-				new Notice(message, 10000);
+					`Linkosaurus: ${this.entries.length} keywords indexed (${this.vaultEntries.length} from vault, ${this.manualEntries.length} manual); ${files} markdown files; auto-detect ${this.settings.scanVaultLinks ? "on" : "off"}; ${noteStatus}.`;
+				new Notice(message, 12000);
 				console.info("Linkosaurus keyword index diagnostics", {
 					keywords: this.entries.length,
 					vaultKeywords: this.vaultEntries.length,
@@ -487,6 +492,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					markdownFiles: files,
 					autoDetect: this.settings.scanVaultLinks,
 					ignoreEdgeEmojis: this.settings.ignoreEdgeEmojis,
+					activeNote: activeFile?.path ?? null,
+					activeNoteExclusion: excluded,
 				});
 			},
 		});
@@ -1874,13 +1881,19 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// link" folder, not opted out by its frontmatter, not a drawing or
 	// board owned by another plugin. Applies to typing, pasting, the
 	// commands and property linking alike.
-	allowsLinksIn(file: TFile | null): boolean {
-		if (!file) return true;
-		if (isInFolders(file.path, this.neverFolders())) return false;
+	private linkingExclusionReason(file: TFile | null): string | null {
+		if (!file) return null;
+		if (isInFolders(file.path, this.neverFolders()))
+			return "Never link inside these folders";
 		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-		if (optsOutByFrontmatter(fm)) return false;
-		if (isPluginOwnedNote(file.path, fm)) return false;
-		return true;
+		if (optsOutByFrontmatter(fm)) return "linkosaurus: false property";
+		if (isPluginOwnedNote(file.path, fm))
+			return "Excalidraw/Kanban-owned note protection";
+		return null;
+	}
+
+	allowsLinksIn(file: TFile | null): boolean {
+		return this.linkingExclusionReason(file) === null;
 	}
 
 	// Whether the vault-wide linkers may write into this note: the same
