@@ -69,6 +69,7 @@ import {
 	parseFolderList,
 	passesFolderFilter,
 } from "./destination";
+import { stripEdgeEmojis } from "./emoji";
 import {
 	affectsIndex,
 	changedSettingKeys,
@@ -98,6 +99,7 @@ import {
 interface AutoLinkSettings {
 	keywordList: string;
 	scanVaultLinks: boolean;
+	ignoreEdgeEmojis: boolean;
 	caseInsensitive: boolean;
 	foldDiacritics: boolean;
 	foldLanguageMode: "all" | "selected";
@@ -130,6 +132,7 @@ interface AutoLinkSettings {
 const DEFAULT_SETTINGS: AutoLinkSettings = {
 	keywordList: "",
 	scanVaultLinks: true,
+	ignoreEdgeEmojis: false,
 	caseInsensitive: true,
 	foldDiacritics: true,
 	foldLanguageMode: "all",
@@ -2265,6 +2268,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const seen = new Set<string>();
 		this.vaultEntries = [];
 		const signatures = new Map<string, string>();
+		const strippedCandidates = new Map<string, KeywordEntry[]>();
 
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (!this.passesFolderFilter(file.path)) continue;
@@ -2273,6 +2277,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const noteName = file.basename.trim();
 			if (!noteName) continue;
 			const norm = this.normalize(noteName);
+			if (this.settings.ignoreEdgeEmojis) {
+				const stripped = stripEdgeEmojis(noteName);
+				if (stripped && stripped !== noteName) {
+					const key = this.normalize(stripped);
+					const candidates = strippedCandidates.get(key) ?? [];
+					candidates.push({ keyword: stripped, target: noteName });
+					strippedCandidates.set(key, candidates);
+				}
+			}
 			if (!seen.has(norm) && !this.manualLookup.has(norm)) {
 				seen.add(norm);
 				this.vaultEntries.push({
@@ -2333,6 +2346,14 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					});
 				}
 			}
+		}
+
+		// Exact filenames, manual entries, aliases and existing links win.
+		// Duplicate stripped titles are deliberately ignored rather than
+		// choosing an arbitrary destination based on vault iteration order.
+		for (const [key, candidates] of strippedCandidates) {
+			if (candidates.length !== 1 || seen.has(key) || this.manualLookup.has(key)) continue;
+			this.vaultEntries.push(candidates[0]!);
 		}
 
 		this.keywordSignatures = signatures;
@@ -3570,6 +3591,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {});
 		if (typeof this.settings.keywordList !== "string")
 			this.settings.keywordList = "";
+		if (typeof this.settings.ignoreEdgeEmojis !== "boolean")
+			this.settings.ignoreEdgeEmojis = DEFAULT_SETTINGS.ignoreEdgeEmojis;
 		if (typeof this.settings.blocklist !== "string")
 			this.settings.blocklist = "";
 		if (typeof this.settings.folderFilter !== "string")
@@ -4167,6 +4190,17 @@ class AutoLinkSettingTab extends PluginSettingTab {
 							plugin.debouncedSave();
 						},
 					}),
+			},
+			{
+				name: "Ignore emoji decorations in note titles",
+				desc: "Match text without leading or trailing emojis in note filenames. The link points to the original note, and its emoji-decorated filename is preserved. Does not create frontmatter aliases. Ambiguous matches are skipped.",
+				aliases: ["emoji", "emoji prefix", "emoji suffix", "filename"],
+				visible: vaultScanOn,
+				control: {
+					type: "toggle",
+					key: "ignoreEdgeEmojis",
+					defaultValue: DEFAULT_SETTINGS.ignoreEdgeEmojis,
+				},
 			},
 			{
 				name: "Case-insensitive matching",
@@ -4776,6 +4810,18 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				}
 			);
 		});
+
+		if (this.plugin.settings.scanVaultLinks) {
+			new Setting(containerEl)
+				.setName("Ignore emoji decorations in note titles")
+				.setDesc("Match note filenames without leading or trailing emojis, while keeping the original filename as the link target. No frontmatter aliases are created; ambiguous titles are skipped.")
+				.addToggle((toggle) => toggle
+					.setValue(this.plugin.settings.ignoreEdgeEmojis)
+					.onChange(async (value) => {
+						this.plugin.settings.ignoreEdgeEmojis = value;
+						await this.plugin.saveSettings();
+					}));
+		}
 
 		new Setting(containerEl)
 			.setName("Case-insensitive matching")
