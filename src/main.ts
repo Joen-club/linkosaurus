@@ -165,6 +165,8 @@ const DEFAULT_SETTINGS: AutoLinkSettings = {
 interface KeywordEntry {
 	keyword: string;
 	target: string;
+	// Derived from an emoji-decorated filename (not a user-authored alias).
+	decorated?: boolean;
 }
 
 // A keyword with everything matching needs precomputed: its folded spellings
@@ -1087,7 +1089,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (file && this.normalize(direct.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + direct.start;
-			const link = formatWikilink(direct.keyword, direct.target);
+			const decorated = this.byExact.get(this.normalize(direct.keyword))?.decorated;
+			const link = formatWikilink(decorated ? direct.target : direct.keyword, direct.target);
 			if (!link) return false;
 			const insert = link + trailing;
 			if (
@@ -1462,7 +1465,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					)
 						continue;
 
-					const link = formatWikilink(entry.keyword, entry.target);
+					const link = formatWikilink(entry.decorated ? entry.target : entry.keyword, entry.target);
 					if (!link) continue;
 					if (stats) stats.links++;
 					result.push(link);
@@ -2282,7 +2285,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 				if (stripped && stripped !== noteName) {
 					const key = this.normalize(stripped);
 					const candidates = strippedCandidates.get(key) ?? [];
-					candidates.push({ keyword: stripped, target: noteName });
+					candidates.push({ keyword: stripped, target: noteName, decorated: true });
 					strippedCandidates.set(key, candidates);
 				}
 			}
@@ -3109,7 +3112,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	) {
 		const insert =
 			displayText === null
-				? formatWikilink(entry.keyword, entry.target)
+				? formatWikilink(entry.decorated ? entry.target : entry.keyword, entry.target)
 				: formatAliasLink(entry.target, displayText);
 		if (!insert) return;
 
