@@ -4889,6 +4889,10 @@ class AutoLinkSettingTab extends PluginSettingTab {
 			cls: "linkosaurus-details-summary",
 			text: `Auto-detected keywords (${vault.length})`,
 		});
+		details.createDiv({
+			cls: "setting-item-description",
+			text: "Discovered keywords may still be excluded by Blocklist, Minimum keyword length or competing mappings. Select text and run 'Diagnose selected keyword' to check whether it can actually link.",
+		});
 		if (vault.length > 0) {
 			details.createDiv({
 				cls: "linkosaurus-details-list",
