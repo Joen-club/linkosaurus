@@ -2303,6 +2303,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.vaultEntries = [];
 		const signatures = new Map<string, string>();
 		const strippedCandidates = new Map<string, KeywordEntry[]>();
+		// Existing wikilinks can name unresolved targets. Add them last.
+		const linkedCandidates: KeywordEntry[] = [];
 
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (!this.passesFolderFilter(file.path)) continue;
@@ -2366,28 +2368,33 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 						raw.includes("/") ? raw.split("/").pop()! : raw
 					).trim();
 					if (!linkName) continue;
-					const linkNorm = this.normalize(linkName);
-					if (
-						seen.has(linkNorm) ||
-						this.manualLookup.has(linkNorm)
-					)
-						continue;
-					seen.add(linkNorm);
-
-					this.vaultEntries.push({
-						keyword: linkName,
-						target: linkName,
-					});
+					linkedCandidates.push({ keyword: linkName, target: linkName });
 				}
 			}
 		}
 
-		// Exact filenames, manual entries, aliases and existing links win.
-		// Duplicate stripped titles are deliberately ignored rather than
-		// choosing an arbitrary destination based on vault iteration order.
+		// Real filenames, manual entries and explicit frontmatter aliases win
+		// over synthesized names. Ambiguous stripped titles must not fall back
+		// to an old, potentially unresolved wikilink with the same text.
+		const ambiguousStripped = new Set<string>();
 		for (const [key, candidates] of strippedCandidates) {
-			if (candidates.length !== 1 || seen.has(key) || this.manualLookup.has(key)) continue;
+			if (candidates.length !== 1) {
+				ambiguousStripped.add(key);
+				continue;
+			}
+			if (seen.has(key) || this.manualLookup.has(key)) continue;
+			seen.add(key);
 			this.vaultEntries.push(candidates[0]!);
+		}
+
+		// An old [[Plain Title]] wikilink should not steal the keyword from
+		// an existing 🗺Plain Title.md file. Outgoing links come last.
+		for (const entry of linkedCandidates) {
+			const key = this.normalize(entry.keyword);
+			if (seen.has(key) || this.manualLookup.has(key) || ambiguousStripped.has(key))
+				continue;
+			seen.add(key);
+			this.vaultEntries.push(entry);
 		}
 
 		this.keywordSignatures = signatures;
