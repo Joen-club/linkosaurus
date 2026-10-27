@@ -461,6 +461,37 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "refresh-keyword-index",
+			name: "Refresh keyword index (diagnostics)",
+			callback: () => {
+				// Rebuild from the live vault immediately, rather than waiting for
+				// a debounced metadata event. Useful after replacing a plugin build.
+				this.rebuildFoldTable();
+				this.parseBlocklist();
+				this.parseManualKeywords();
+				if (this.settings.scanVaultLinks) {
+					this.scanVaultLinks();
+				} else {
+					this.vaultEntries = [];
+					this.rebuildEntries();
+				}
+				this.parseTlds();
+				const files = this.app.vault.getMarkdownFiles().length;
+				const message =
+					`Linkosaurus: ${this.entries.length} keywords indexed (${this.vaultEntries.length} from vault, ${this.manualEntries.length} manual); ${files} markdown files; auto-detect ${this.settings.scanVaultLinks ? "on" : "off"}.`;
+				new Notice(message, 10000);
+				console.info("Linkosaurus keyword index diagnostics", {
+					keywords: this.entries.length,
+					vaultKeywords: this.vaultEntries.length,
+					manualKeywords: this.manualEntries.length,
+					markdownFiles: files,
+					autoDetect: this.settings.scanVaultLinks,
+					ignoreEdgeEmojis: this.settings.ignoreEdgeEmojis,
+				});
+			},
+		});
+
+		this.addCommand({
 			id: "autolink-current-note",
 			name: "Auto-link keywords in current note",
 			editorCallback: (editor) => {
