@@ -45,3 +45,33 @@ test("diagnostics reveal all existing content-protection rules", () => {
 	assert.equal(reason("Drawings/a.excalidraw.md"), "Excalidraw/Kanban-owned note protection");
 	assert.equal(reason("Notes/Normal.md"), null);
 });
+
+
+test("diagnostics distinguish discovered, active, blocked and too-short keywords", () => {
+	const files = [
+		{ basename: "Old Note", path: "Old Note.md", extension: "md" },
+		{ basename: "Berlin", path: "Berlin.md", extension: "md" },
+		{ basename: "A", path: "A.md", extension: "md" },
+	];
+	const p = new AutoLinkKeywordsPlugin({
+		vault: { getMarkdownFiles: () => files },
+		metadataCache: { getFileCache: () => null },
+	} as never, {} as never);
+	Object.assign(p.settings, {
+		scanVaultLinks: true,
+		blocklist: "Old Note",
+		minKeywordLength: 2,
+	});
+	p.rebuildFoldTable();
+	p.parseBlocklist();
+	p.parseManualKeywords();
+	(p as unknown as { scanVaultLinks(): void }).scanVaultLinks();
+	const status = (p as unknown as {
+		keywordMatchingStatus(keyword: string): string;
+	}).keywordMatchingStatus.bind(p);
+	assert.ok(p.getVaultKeywords().includes("Old Note"));
+	assert.match(status("Old Note"), /excluded by Blocklist/);
+	assert.match(status("A"), /excluded by Minimum keyword length/);
+	assert.match(status("Berlin"), /is active/);
+	assert.match(status("Missing"), /not an active or discovered keyword/);
+});
