@@ -1,0 +1,27 @@
+name: Validate plugin
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [feat/ignore-edge-emojis]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - run: npm test
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linkosaurus-emoji-test-build
+          path: |
+            main.js
+            manifest.json
+            styles.css

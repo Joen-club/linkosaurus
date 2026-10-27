@@ -69,6 +69,7 @@ import {
 	parseFolderList,
 	passesFolderFilter,
 } from "./destination";
+import { stripEdgeEmojis } from "./emoji";
 import {
 	affectsIndex,
 	changedSettingKeys,
@@ -98,6 +99,7 @@ import {
 interface AutoLinkSettings {
 	keywordList: string;
 	scanVaultLinks: boolean;
+	ignoreEdgeEmojis: boolean;
 	caseInsensitive: boolean;
 	foldDiacritics: boolean;
 	foldLanguageMode: "all" | "selected";
@@ -130,6 +132,7 @@ interface AutoLinkSettings {
 const DEFAULT_SETTINGS: AutoLinkSettings = {
 	keywordList: "",
 	scanVaultLinks: true,
+	ignoreEdgeEmojis: false,
 	caseInsensitive: true,
 	foldDiacritics: true,
 	foldLanguageMode: "all",
@@ -162,6 +165,8 @@ const DEFAULT_SETTINGS: AutoLinkSettings = {
 interface KeywordEntry {
 	keyword: string;
 	target: string;
+	// Derived from an emoji-decorated filename (not a user-authored alias).
+	decorated?: boolean;
 }
 
 // A keyword with everything matching needs precomputed: its folded spellings
@@ -452,6 +457,64 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					this.settings.keywordList = list + sep + text;
 					void this.saveSettings();
 				}
+			},
+		});
+
+		this.addCommand({
+			id: "refresh-keyword-index",
+			name: "Refresh keyword index (diagnostics)",
+			callback: () => {
+				// Rebuild from the live vault immediately, rather than waiting for
+				// a debounced metadata event. Useful after replacing a plugin build.
+				this.rebuildFoldTable();
+				this.parseBlocklist();
+				this.parseManualKeywords();
+				if (this.settings.scanVaultLinks) {
+					this.scanVaultLinks();
+				} else {
+					this.vaultEntries = [];
+					this.rebuildEntries();
+				}
+				this.parseTlds();
+				const files = this.app.vault.getMarkdownFiles().length;
+				const activeFile = this.app.workspace.getActiveFile();
+				const excluded = this.linkingExclusionReason(activeFile);
+				const noteStatus = activeFile
+					? excluded ? `current note excluded (${excluded})` : "current note allowed"
+					: "no active note";
+				const message =
+					`Linkosaurus: ${this.entries.length} keywords indexed (${this.vaultEntries.length} from vault, ${this.manualEntries.length} manual); ${files} markdown files; auto-detect ${this.settings.scanVaultLinks ? "on" : "off"}; ${noteStatus}.`;
+				new Notice(message, 12000);
+				console.info("Linkosaurus keyword index diagnostics", {
+					keywords: this.entries.length,
+					vaultKeywords: this.vaultEntries.length,
+					manualKeywords: this.manualEntries.length,
+					markdownFiles: files,
+					autoDetect: this.settings.scanVaultLinks,
+					ignoreEdgeEmojis: this.settings.ignoreEdgeEmojis,
+					activeNote: activeFile?.path ?? null,
+					activeNoteExclusion: excluded,
+				});
+			},
+		});
+
+		this.addCommand({
+			id: "diagnose-selected-keyword",
+			name: "Diagnose selected keyword",
+			editorCallback: (editor) => {
+				const selected = editor.getSelection().trim();
+				if (!selected) {
+					new Notice("Linkosaurus: select the complete keyword to diagnose.", 8000);
+					return;
+				}
+				const status = this.keywordMatchingStatus(selected);
+				const sourceExclusion = this.linkingExclusionReason(
+					this.app.workspace.getActiveFile()
+				);
+				const noteStatus = sourceExclusion
+					? ` Current note excluded by ${sourceExclusion}.`
+					: "";
+				new Notice(`Linkosaurus: ${status}${noteStatus}`, 12000);
 			},
 		});
 
@@ -1084,7 +1147,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			if (file && this.normalize(direct.target) === this.normalize(file.basename))
 				return false;
 			const absStart = line.from + direct.start;
-			const link = formatWikilink(direct.keyword, direct.target);
+			const decorated = this.byExact.get(this.normalize(direct.keyword))?.decorated;
+			const link = formatWikilink(decorated ? direct.target : direct.keyword, direct.target);
 			if (!link) return false;
 			const insert = link + trailing;
 			if (
@@ -1459,7 +1523,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 					)
 						continue;
 
-					const link = formatWikilink(entry.keyword, entry.target);
+					const link = formatWikilink(entry.decorated ? entry.target : entry.keyword, entry.target);
 					if (!link) continue;
 					if (stats) stats.links++;
 					result.push(link);
@@ -1837,13 +1901,19 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	// link" folder, not opted out by its frontmatter, not a drawing or
 	// board owned by another plugin. Applies to typing, pasting, the
 	// commands and property linking alike.
-	allowsLinksIn(file: TFile | null): boolean {
-		if (!file) return true;
-		if (isInFolders(file.path, this.neverFolders())) return false;
+	private linkingExclusionReason(file: TFile | null): string | null {
+		if (!file) return null;
+		if (isInFolders(file.path, this.neverFolders()))
+			return "Never link inside these folders";
 		const fm = this.app.metadataCache.getFileCache(file)?.frontmatter;
-		if (optsOutByFrontmatter(fm)) return false;
-		if (isPluginOwnedNote(file.path, fm)) return false;
-		return true;
+		if (optsOutByFrontmatter(fm)) return "linkosaurus: false property";
+		if (isPluginOwnedNote(file.path, fm))
+			return "Excalidraw/Kanban-owned note protection";
+		return null;
+	}
+
+	allowsLinksIn(file: TFile | null): boolean {
+		return this.linkingExclusionReason(file) === null;
 	}
 
 	// Whether the vault-wide linkers may write into this note: the same
@@ -2265,6 +2335,9 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		const seen = new Set<string>();
 		this.vaultEntries = [];
 		const signatures = new Map<string, string>();
+		const strippedCandidates = new Map<string, KeywordEntry[]>();
+		// Existing wikilinks can name unresolved targets. Add them last.
+		const linkedCandidates: KeywordEntry[] = [];
 
 		for (const file of this.app.vault.getMarkdownFiles()) {
 			if (!this.passesFolderFilter(file.path)) continue;
@@ -2273,6 +2346,15 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 			const noteName = file.basename.trim();
 			if (!noteName) continue;
 			const norm = this.normalize(noteName);
+			if (this.settings.ignoreEdgeEmojis) {
+				const stripped = stripEdgeEmojis(noteName);
+				if (stripped && stripped !== noteName) {
+					const key = this.normalize(stripped);
+					const candidates = strippedCandidates.get(key) ?? [];
+					candidates.push({ keyword: stripped, target: noteName, decorated: true });
+					strippedCandidates.set(key, candidates);
+				}
+			}
 			if (!seen.has(norm) && !this.manualLookup.has(norm)) {
 				seen.add(norm);
 				this.vaultEntries.push({
@@ -2319,20 +2401,33 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 						raw.includes("/") ? raw.split("/").pop()! : raw
 					).trim();
 					if (!linkName) continue;
-					const linkNorm = this.normalize(linkName);
-					if (
-						seen.has(linkNorm) ||
-						this.manualLookup.has(linkNorm)
-					)
-						continue;
-					seen.add(linkNorm);
-
-					this.vaultEntries.push({
-						keyword: linkName,
-						target: linkName,
-					});
+					linkedCandidates.push({ keyword: linkName, target: linkName });
 				}
 			}
+		}
+
+		// Real filenames, manual entries and explicit frontmatter aliases win
+		// over synthesized names. Ambiguous stripped titles must not fall back
+		// to an old, potentially unresolved wikilink with the same text.
+		const ambiguousStripped = new Set<string>();
+		for (const [key, candidates] of strippedCandidates) {
+			if (candidates.length !== 1) {
+				ambiguousStripped.add(key);
+				continue;
+			}
+			if (seen.has(key) || this.manualLookup.has(key)) continue;
+			seen.add(key);
+			this.vaultEntries.push(candidates[0]!);
+		}
+
+		// An old [[Plain Title]] wikilink should not steal the keyword from
+		// an existing 🗺Plain Title.md file. Outgoing links come last.
+		for (const entry of linkedCandidates) {
+			const key = this.normalize(entry.keyword);
+			if (seen.has(key) || this.manualLookup.has(key) || ambiguousStripped.has(key))
+				continue;
+			seen.add(key);
+			this.vaultEntries.push(entry);
 		}
 
 		this.keywordSignatures = signatures;
@@ -3088,7 +3183,7 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 	) {
 		const insert =
 			displayText === null
-				? formatWikilink(entry.keyword, entry.target)
+				? formatWikilink(entry.decorated ? entry.target : entry.keyword, entry.target)
 				: formatAliasLink(entry.target, displayText);
 		if (!insert) return;
 
@@ -3267,6 +3362,45 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 
 		return null;
+	}
+
+	// The settings panel lists *discovered* keywords, which can still be
+	// filtered by the blocklist/length or displaced by an existing mapping.
+	// Explain the effective index for an exact selected phrase.
+	private keywordMatchingStatus(phrase: string): string {
+		const input = phrase.trim();
+		if (!input) return "No keyword selected.";
+		const key = this.foldKey(input);
+		const candidates = this.byKey.get(key) ?? [];
+		const matching = candidates.find(({ entry, ambiguous }) =>
+			!ambiguous || this.normalize(input) === entry.exact
+		);
+		if (matching) {
+			return `"${input}" is active → "${matching.entry.target}".`;
+		}
+		if (candidates.length > 0)
+			return `"${input}" is ambiguous after letter/diacritic folding; use the exact title.`;
+
+		const discovered = this.vaultEntries.find(
+			(entry) =>
+				this.normalize(entry.keyword) === this.normalize(input) ||
+				this.foldKey(entry.keyword) === key
+		);
+		if (discovered) {
+			if (
+				this.settings.minKeywordLength > 0 &&
+				discovered.keyword.length < this.settings.minKeywordLength
+			)
+				return `"${input}" was discovered but excluded by Minimum keyword length.`;
+			if (
+				this.foldVariantsCached(discovered.keyword).some(
+					(variant) => this.blocklistSet.has(variant)
+				)
+			)
+				return `"${input}" was discovered but excluded by Blocklist.`;
+			return `"${input}" was discovered but is not active (a competing keyword or duplicate may take priority).`;
+		}
+		return `"${input}" is not an active or discovered keyword. Check Auto-detect vault links, the Folder filter, and the emoji setting.`;
 	}
 
 	getVaultKeywords(): string[] {
@@ -3570,6 +3704,8 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, loaded ?? {});
 		if (typeof this.settings.keywordList !== "string")
 			this.settings.keywordList = "";
+		if (typeof this.settings.ignoreEdgeEmojis !== "boolean")
+			this.settings.ignoreEdgeEmojis = DEFAULT_SETTINGS.ignoreEdgeEmojis;
 		if (typeof this.settings.blocklist !== "string")
 			this.settings.blocklist = "";
 		if (typeof this.settings.folderFilter !== "string")
@@ -4169,6 +4305,17 @@ class AutoLinkSettingTab extends PluginSettingTab {
 					}),
 			},
 			{
+				name: "Ignore emoji decorations in note titles",
+				desc: "Match text without leading or trailing emojis in note filenames. The link points to the original note, and its emoji-decorated filename is preserved. Does not create frontmatter aliases. Ambiguous matches are skipped.",
+				aliases: ["emoji", "emoji prefix", "emoji suffix", "filename"],
+				visible: vaultScanOn,
+				control: {
+					type: "toggle",
+					key: "ignoreEdgeEmojis",
+					defaultValue: DEFAULT_SETTINGS.ignoreEdgeEmojis,
+				},
+			},
+			{
 				name: "Case-insensitive matching",
 				desc: "Match keywords regardless of upper/lower case.",
 				control: {
@@ -4742,6 +4889,10 @@ class AutoLinkSettingTab extends PluginSettingTab {
 			cls: "linkosaurus-details-summary",
 			text: `Auto-detected keywords (${vault.length})`,
 		});
+		details.createDiv({
+			cls: "setting-item-description",
+			text: "Discovered keywords may still be excluded by Blocklist, Minimum keyword length or competing mappings. Select text and run 'Diagnose selected keyword' to check whether it can actually link.",
+		});
 		if (vault.length > 0) {
 			details.createDiv({
 				cls: "linkosaurus-details-list",
@@ -4776,6 +4927,18 @@ class AutoLinkSettingTab extends PluginSettingTab {
 				}
 			);
 		});
+
+		if (this.plugin.settings.scanVaultLinks) {
+			new Setting(containerEl)
+				.setName("Ignore emoji decorations in note titles")
+				.setDesc("Match note filenames without leading or trailing emojis, while keeping the original filename as the link target. No frontmatter aliases are created; ambiguous titles are skipped.")
+				.addToggle((toggle) => toggle
+					.setValue(this.plugin.settings.ignoreEdgeEmojis)
+					.onChange(async (value) => {
+						this.plugin.settings.ignoreEdgeEmojis = value;
+						await this.plugin.saveSettings();
+					}));
+		}
 
 		new Setting(containerEl)
 			.setName("Case-insensitive matching")
