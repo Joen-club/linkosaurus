@@ -499,6 +499,26 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: "diagnose-selected-keyword",
+			name: "Diagnose selected keyword",
+			editorCallback: (editor) => {
+				const selected = editor.getSelection().trim();
+				if (!selected) {
+					new Notice("Linkosaurus: select the complete keyword to diagnose.", 8000);
+					return;
+				}
+				const status = this.keywordMatchingStatus(selected);
+				const sourceExclusion = this.linkingExclusionReason(
+					this.app.workspace.getActiveFile()
+				);
+				const noteStatus = sourceExclusion
+					? ` Current note excluded by ${sourceExclusion}.`
+					: "";
+				new Notice(`Linkosaurus: ${status}${noteStatus}`, 12000);
+			},
+		});
+
+		this.addCommand({
 			id: "autolink-current-note",
 			name: "Auto-link keywords in current note",
 			editorCallback: (editor) => {
@@ -3342,6 +3362,45 @@ export default class AutoLinkKeywordsPlugin extends Plugin {
 		}
 
 		return null;
+	}
+
+	// The settings panel lists *discovered* keywords, which can still be
+	// filtered by the blocklist/length or displaced by an existing mapping.
+	// Explain the effective index for an exact selected phrase.
+	private keywordMatchingStatus(phrase: string): string {
+		const input = phrase.trim();
+		if (!input) return "No keyword selected.";
+		const key = this.foldKey(input);
+		const candidates = this.byKey.get(key) ?? [];
+		const matching = candidates.find(({ entry, ambiguous }) =>
+			!ambiguous || this.normalize(input) === entry.exact
+		);
+		if (matching) {
+			return `"${input}" is active → "${matching.entry.target}".`;
+		}
+		if (candidates.length > 0)
+			return `"${input}" is ambiguous after letter/diacritic folding; use the exact title.`;
+
+		const discovered = this.vaultEntries.find(
+			(entry) =>
+				this.normalize(entry.keyword) === this.normalize(input) ||
+				this.foldKey(entry.keyword) === key
+		);
+		if (discovered) {
+			if (
+				this.settings.minKeywordLength > 0 &&
+				discovered.keyword.length < this.settings.minKeywordLength
+			)
+				return `"${input}" was discovered but excluded by Minimum keyword length.`;
+			if (
+				this.foldVariantsCached(discovered.keyword).some(
+					(variant) => this.blocklistSet.has(variant)
+				)
+			)
+				return `"${input}" was discovered but excluded by Blocklist.`;
+			return `"${input}" was discovered but is not active (a competing keyword or duplicate may take priority).`;
+		}
+		return `"${input}" is not an active or discovered keyword. Check Auto-detect vault links, the Folder filter, and the emoji setting.`;
 	}
 
 	getVaultKeywords(): string[] {
