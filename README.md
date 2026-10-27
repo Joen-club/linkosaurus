@@ -277,7 +277,9 @@ After installing a custom build, restart Obsidian and confirm **Auto-detect vaul
 
 To distinguish indexing from editor-event problems, put the name of another existing note in a scratch note. First try the **Auto-link keywords in current note** command. If this converts the title but typing it followed by Space does not, investigate the editor integration or another community plugin intercepting input. If the command does not convert it either, review the keyword count, folder filters, blocklist and note opt-outs.
 
-A note can contribute a keyword to the vault index but still be a **forbidden destination for new links**. "Never link inside these folders", the `linkosaurus: false` note property, and Excalidraw/Kanban protection block writing *inside* a note without removing it from the list of linkable targets. The **Folder filter** controls only where new keywords are discovered.
+**To diagnose a specific older title, select its text and run `Linkosaurus: Diagnose selected keyword`.** The notice reports whether the keyword is effective, was blocked, is shorter than the minimum, or is absent from the index. If the current note cannot receive links, it also identifies the protecting rule. The **Auto-detected keywords** list is a discovery list, not a guarantee that every name passed the filters.
+
+A note can contribute a keyword to the vault index but still be a **place where new links must not be inserted**. "Never link inside these folders", the `linkosaurus: false` note property, and Excalidraw/Kanban protection block writing *inside* a note without removing it from the list of linkable targets. The **Folder filter** controls only where new keywords are discovered.
 
 Automatic linking while typing does not rewrite already-written paragraphs. Use **Auto-link keywords in current note**, a vault-wide linking command (which skips open notes), or opt into periodic auto-relink for existing text.
 
