@@ -254,6 +254,7 @@ Linkosaurus ships with more knobs than most people will ever need — every opti
 | **Accept suggestion with Enter** | Enter links the highlighted suggestion (on by default) |
 | **Accept suggestion with Tab** | Tab links the highlighted suggestion (on by default) |
 | **Auto-detect vault links** | Use every note name in the vault as a keyword |
+| **Ignore emoji decorations in note titles** | Match the title of a note without leading/trailing emojis, without editing its filename or frontmatter. Links use the original filename, not a piped alias (off by default; requires auto-detect). |
 | **Include frontmatter aliases** | Use `aliases:` fields from frontmatter as keywords |
 | **Minimum keyword length** | Floor for auto-detected keyword length (0 = no limit) |
 | **Blocklist** | Keywords excluded from auto-linking (e.g. `Home`, `Inbox`, `Daily`) |
@@ -269,6 +270,14 @@ Linkosaurus ships with more knobs than most people will ever need — every opti
 | **Properties to link** | Which property names to link (empty = all but `tags`, `aliases`, `cssclasses`) |
 | **Link properties after editing** | Link a value as soon as you leave the field (on by default) |
 | **Complete property names** | Let `Museum` find `Museum of Natural History` when it is unambiguous (on by default) |
+
+## Troubleshooting a fork install
+
+After installing a custom build, restart Obsidian and confirm **Auto-detect vault links** is enabled. In the command palette, choose **Linkosaurus: Refresh keyword index (diagnostics)**. The notice reports how many keywords were indexed, how many Markdown files were scanned, and whether auto-detection is enabled. This also forces a fresh index.
+
+To distinguish indexing from editor-event problems, put the name of another existing note in a scratch note. First try the **Auto-link keywords in current note** command. If this converts the title but typing it followed by Space does not, investigate the editor integration or another community plugin intercepting input. If the command does not convert it either, review the keyword count, folder filters, blocklist and note opt-outs.
+
+This diagnostic command does not edit notes. Use a disposable scratch note for testing; automatic linking does edit its contents.
 
 ## Privacy
 
