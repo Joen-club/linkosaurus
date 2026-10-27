@@ -18,3 +18,10 @@ jobs:
       - run: npm ci --legacy-peer-deps
       - run: npm test
       - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linkosaurus-emoji-test-build
+          path: |
+            main.js
+            manifest.json
+            styles.css
