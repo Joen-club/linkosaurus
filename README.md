@@ -273,9 +273,15 @@ Linkosaurus ships with more knobs than most people will ever need — every opti
 
 ## Troubleshooting a fork install
 
-After installing a custom build, restart Obsidian and confirm **Auto-detect vault links** is enabled. In the command palette, choose **Linkosaurus: Refresh keyword index (diagnostics)**. The notice reports how many keywords were indexed, how many Markdown files were scanned, and whether auto-detection is enabled. This also forces a fresh index.
+After installing a custom build, restart Obsidian and confirm **Auto-detect vault links** is enabled. In the command palette, choose **Linkosaurus: Refresh keyword index (diagnostics)**. The notice reports how many keywords were indexed, how many Markdown files were scanned, whether auto-detection is enabled, **and whether the currently open note is allowed to receive links**. If excluded, the notice names the responsible rule. The command also forces a fresh index.
 
 To distinguish indexing from editor-event problems, put the name of another existing note in a scratch note. First try the **Auto-link keywords in current note** command. If this converts the title but typing it followed by Space does not, investigate the editor integration or another community plugin intercepting input. If the command does not convert it either, review the keyword count, folder filters, blocklist and note opt-outs.
+
+A note can contribute a keyword to the vault index but still be a **forbidden destination for new links**. "Never link inside these folders", the `linkosaurus: false` note property, and Excalidraw/Kanban protection block writing *inside* a note without removing it from the list of linkable targets. The **Folder filter** controls only where new keywords are discovered.
+
+Automatic linking while typing does not rewrite already-written paragraphs. Use **Auto-link keywords in current note**, a vault-wide linking command (which skips open notes), or opt into periodic auto-relink for existing text.
+
+If emoji-free matching fails while normal titles work, confirm **Ignore emoji decorations in note titles** is enabled. Older `[[Plain Title]]` links are treated as fallback keywords, so they no longer displace an actual `🗺Plain Title.md` file.
 
 This diagnostic command does not edit notes. Use a disposable scratch note for testing; automatic linking does edit its contents.
 
