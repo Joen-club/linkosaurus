@@ -32,6 +32,7 @@ export const INDEX_SETTING_KEYS: readonly string[] = [
 	"foldLanguages",
 	"minKeywordLength",
 	"scanVaultLinks",
+	"ignoreEdgeEmojis",
 	"scanFrontmatterAliases",
 	"folderFilter",
 	"folderFilterMode",
